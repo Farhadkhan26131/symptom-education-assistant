@@ -4,25 +4,25 @@ import random
 import re
 from datetime import datetime
 
-from gemini_agent import run_gemini_with_retry
+# ============================================================
+# AGENT IMPORT
+# ============================================================
+from agent import HealthAgent
 from database import ChatDatabase
 
 
 # ============================================================
 # OPTIONAL IMPORTS
 # ============================================================
-
 try:
     from analytics_dashboard import show_analytics
 except ImportError:
     show_analytics = None
 
-
 try:
     from voice_input import get_voice_input
 except ImportError:
     get_voice_input = None
-
 
 try:
     from pdf_export import create_pdf
@@ -33,7 +33,6 @@ except ImportError:
 # ============================================================
 # PAGE CONFIGURATION
 # ============================================================
-
 st.set_page_config(
     page_title="Health Assistant",
     page_icon="🩺",
@@ -45,16 +44,19 @@ st.set_page_config(
 # ============================================================
 # DATABASE
 # ============================================================
-
 db = ChatDatabase()
+
+
+# ============================================================
+# HEALTH AGENT
+# ============================================================
+health_agent = HealthAgent()
 
 
 # ============================================================
 # SESSION STATE INITIALIZATION
 # ============================================================
-
 if "messages" not in st.session_state:
-
     st.session_state.messages = [
         {
             "role": "assistant",
@@ -68,38 +70,29 @@ if "messages" not in st.session_state:
         }
     ]
 
-
 if "age_group" not in st.session_state:
     st.session_state.age_group = "Adults"
-
 
 if "language" not in st.session_state:
     st.session_state.language = "English"
 
-
 if "query_count" not in st.session_state:
     st.session_state.query_count = 0
-
 
 if "quick_topic" not in st.session_state:
     st.session_state.quick_topic = None
 
-
 if "theme" not in st.session_state:
     st.session_state.theme = "Dark"
-
 
 if "process_quick_topic" not in st.session_state:
     st.session_state.process_quick_topic = False
 
-
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(random.randint(1000, 9999))
 
-
 if "current_page" not in st.session_state:
     st.session_state.current_page = "Health Assistant"
-
 
 if "voice_text" not in st.session_state:
     st.session_state.voice_text = ""
@@ -108,7 +101,6 @@ if "voice_text" not in st.session_state:
 # ============================================================
 # RATE LIMITER
 # ============================================================
-
 rate_limit_data = {}
 
 MAX_REQUESTS = 20
@@ -116,7 +108,6 @@ TIME_WINDOW = 60
 
 
 def check_rate_limit(user_id):
-
     current_time = time.time()
 
     if user_id not in rate_limit_data:
@@ -139,10 +130,9 @@ def check_rate_limit(user_id):
 # ============================================================
 # CLEAN AI RESPONSE
 # ============================================================
-
 def clean_ai_response(text):
     """
-    Clean accidental HTML and Streamlit anchor artifacts
+    Clean accidental HTML and Streamlit artifacts
     from AI-generated responses.
     """
 
@@ -151,30 +141,23 @@ def clean_ai_response(text):
 
     text = str(text)
 
-    # --------------------------------------------------------
-    # Remove Streamlit SVG/anchor artifacts
-    # Example:
-    # [svg](https://example.com/#heading)
-    # --------------------------------------------------------
-
+    # Remove SVG/anchor artifacts
     text = re.sub(
-        r'\[svg\]\([^)]*\)',
+        r'\[\s*svg\s*\]\([^)]*\)',
         '',
         text,
         flags=re.IGNORECASE
     )
 
-    # --------------------------------------------------------
-    # Remove accidental assistant HTML wrapper
-    # --------------------------------------------------------
-
+    # Remove accidental Health Assistant HTML wrapper
     text = re.sub(
-        r'<strong>\s*🩺\s*Health Assistant\s*</strong>',
+        r'<strong>\s*\*?\s*🩺\s*Health Assistant\s*\*?\s*</strong>',
         '',
         text,
         flags=re.IGNORECASE
     )
 
+    # Convert <br> to newline
     text = re.sub(
         r'<br\s*/?>',
         '\n',
@@ -182,6 +165,7 @@ def clean_ai_response(text):
         flags=re.IGNORECASE
     )
 
+    # Remove div tags
     text = re.sub(
         r'</?div[^>]*>',
         '',
@@ -189,10 +173,7 @@ def clean_ai_response(text):
         flags=re.IGNORECASE
     )
 
-    # --------------------------------------------------------
-    # Remove code fences around the old HTML wrapper
-    # --------------------------------------------------------
-
+    # Remove markdown code fences
     text = re.sub(
         r'```(?:html)?\s*',
         '',
@@ -206,10 +187,7 @@ def clean_ai_response(text):
         text
     )
 
-    # --------------------------------------------------------
     # Remove excessive blank lines
-    # --------------------------------------------------------
-
     text = re.sub(
         r'\n{4,}',
         '\n\n',
@@ -222,9 +200,7 @@ def clean_ai_response(text):
 # ============================================================
 # SHORT-TERM MEMORY
 # ============================================================
-
 def get_conversation_history():
-
     if len(st.session_state.messages) <= 1:
         return []
 
@@ -232,18 +208,13 @@ def get_conversation_history():
 
 
 # ============================================================
-# THEME CSS
+# DARK THEME
 # ============================================================
-
 if st.session_state.theme == "Dark":
 
     st.markdown(
         """
         <style>
-
-        /* ====================================================
-           MAIN APPLICATION
-        ==================================================== */
 
         .stApp {
             background-color: #0f172a !important;
@@ -254,11 +225,6 @@ if st.session_state.theme == "Dark":
             background-color: #0f172a !important;
         }
 
-
-        /* ====================================================
-           SIDEBAR
-        ==================================================== */
-
         [data-testid="stSidebar"] {
             background-color: #111827 !important;
         }
@@ -266,11 +232,6 @@ if st.session_state.theme == "Dark":
         [data-testid="stSidebar"] * {
             color: #f8fafc !important;
         }
-
-
-        /* ====================================================
-           HEADER
-        ==================================================== */
 
         .main-title {
             font-size: 42px;
@@ -293,11 +254,6 @@ if st.session_state.theme == "Dark":
             margin-bottom: 15px;
         }
 
-
-        /* ====================================================
-           INFORMATION CARDS
-        ==================================================== */
-
         .info-card {
             padding: 20px;
             border-radius: 15px;
@@ -315,11 +271,6 @@ if st.session_state.theme == "Dark":
             color: #cbd5e1 !important;
         }
 
-
-        /* ====================================================
-           STREAMLIT CHAT MESSAGE
-        ==================================================== */
-
         [data-testid="stChatMessage"] {
             background-color: #1e293b !important;
             border: 1px solid #334155 !important;
@@ -329,17 +280,12 @@ if st.session_state.theme == "Dark":
             margin-bottom: 10px !important;
         }
 
-        /* User and assistant message content */
-
         [data-testid="stChatMessage"] p,
         [data-testid="stChatMessage"] li,
         [data-testid="stChatMessage"] span,
         [data-testid="stChatMessage"] div {
             color: #f8fafc !important;
         }
-
-
-        /* Chat headings */
 
         [data-testid="stChatMessage"] h1,
         [data-testid="stChatMessage"] h2,
@@ -348,24 +294,13 @@ if st.session_state.theme == "Dark":
             color: #38bdf8 !important;
         }
 
-
-        /* Chat bold text */
-
         [data-testid="stChatMessage"] strong {
             color: #f8fafc !important;
         }
 
-
-        /* Chat links */
-
         [data-testid="stChatMessage"] a {
             color: #7dd3fc !important;
         }
-
-
-        /* ====================================================
-           CHAT INPUT
-        ==================================================== */
 
         [data-testid="stChatInput"] {
             background-color: #1e293b !important;
@@ -383,19 +318,9 @@ if st.session_state.theme == "Dark":
             color: #94a3b8 !important;
         }
 
-
-        /* ====================================================
-           NORMAL STREAMLIT TEXT
-        ==================================================== */
-
         .stMarkdown {
             color: #f8fafc;
         }
-
-
-        /* ====================================================
-           DISCLAIMER
-        ==================================================== */
 
         .disclaimer {
             background-color: #3f2f14;
@@ -406,11 +331,6 @@ if st.session_state.theme == "Dark":
             margin-top: 20px;
         }
 
-
-        /* ====================================================
-           FOOTER
-        ==================================================== */
-
         footer {
             visibility: hidden;
         }
@@ -420,6 +340,10 @@ if st.session_state.theme == "Dark":
         unsafe_allow_html=True
     )
 
+
+# ============================================================
+# LIGHT THEME
+# ============================================================
 else:
 
     st.markdown(
@@ -539,7 +463,6 @@ else:
 # ============================================================
 # HEADER
 # ============================================================
-
 st.markdown(
     '<div class="main-title">🩺 Health Assistant</div>',
     unsafe_allow_html=True
@@ -556,11 +479,9 @@ st.markdown(
 # ============================================================
 # SIDEBAR
 # ============================================================
-
 with st.sidebar:
 
     st.markdown("## 🩺 Health Assistant")
-
     st.markdown("---")
 
     page = st.radio(
@@ -582,7 +503,6 @@ with st.sidebar:
     st.session_state.current_page = page
 
     st.markdown("---")
-
     st.markdown("### ⚙️ Settings")
 
     st.session_state.theme = st.selectbox(
@@ -630,11 +550,9 @@ with st.sidebar:
     )
 
     st.markdown("---")
-
     st.markdown("### 🏥 Health Categories")
 
     disease_categories = {
-
         "🤒 Common Symptoms": [
             "Headache",
             "Fever",
@@ -642,25 +560,21 @@ with st.sidebar:
             "Cold",
             "Fatigue"
         ],
-
         "🫀 Chronic Conditions": [
             "Diabetes",
             "High Blood Pressure",
             "Heart Health"
         ],
-
         "🧠 Mental Wellness": [
             "Stress",
             "Anxiety",
             "Sleep"
         ],
-
         "🥗 Healthy Lifestyle": [
             "Nutrition",
             "Exercise",
             "Hydration"
         ]
-
     }
 
     selected_category = st.selectbox(
@@ -677,13 +591,11 @@ with st.sidebar:
         "Learn About Topic",
         use_container_width=True
     ):
-
         st.session_state.quick_topic = selected_topic
         st.session_state.process_quick_topic = True
         st.rerun()
 
     st.markdown("---")
-
     st.markdown("### 🛠️ Actions")
 
     if st.button(
@@ -709,7 +621,6 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-
     st.markdown("### 📄 Export")
 
     if st.button(
@@ -766,7 +677,6 @@ with st.sidebar:
 # ============================================================
 # HEALTH TIPS PAGE
 # ============================================================
-
 if st.session_state.current_page == "Health Tips":
 
     st.markdown(
@@ -777,37 +687,30 @@ if st.session_state.current_page == "Health Tips":
     )
 
     tips = [
-
         (
             "💧 Stay Hydrated",
             "Drink enough water throughout the day."
         ),
-
         (
             "🥗 Eat Balanced Meals",
             "Include vegetables, fruits, proteins, and whole grains."
         ),
-
         (
             "🏃 Stay Active",
             "Regular physical activity supports overall health."
         ),
-
         (
             "😴 Sleep Well",
             "Maintain a consistent and healthy sleep schedule."
         ),
-
         (
             "🧘 Manage Stress",
             "Use healthy relaxation techniques and take regular breaks."
         ),
-
         (
             "🧼 Maintain Hygiene",
             "Wash your hands regularly and maintain personal hygiene."
         )
-
     ]
 
     for title, description in tips:
@@ -836,7 +739,6 @@ if st.session_state.current_page == "Health Tips":
 # ============================================================
 # ANALYTICS PAGE
 # ============================================================
-
 elif st.session_state.current_page == "Analytics":
 
     st.markdown(
@@ -867,7 +769,6 @@ elif st.session_state.current_page == "Analytics":
 # ============================================================
 # CONTACT PAGE
 # ============================================================
-
 elif st.session_state.current_page == "Contact":
 
     st.markdown(
@@ -914,13 +815,11 @@ elif st.session_state.current_page == "Contact":
 # ============================================================
 # MAIN HEALTH ASSISTANT PAGE
 # ============================================================
-
 else:
 
     # ========================================================
     # QUICK TOPIC PROCESSING
     # ========================================================
-
     if st.session_state.process_quick_topic:
 
         topic = st.session_state.quick_topic
@@ -956,10 +855,10 @@ else:
 
                 try:
 
-                    response = run_gemini_with_retry(
-                        prompt,
-                        st.session_state.age_group,
-                        st.session_state.language,
+                    response = health_agent.run(
+                        user_input=prompt,
+                        age_group=st.session_state.age_group,
+                        language=st.session_state.language,
                         conversation_history=conversation_history
                     )
 
@@ -1003,7 +902,6 @@ else:
     # ========================================================
     # INFORMATION CARDS
     # ========================================================
-
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -1064,7 +962,6 @@ else:
     # ========================================================
     # CONVERSATION
     # ========================================================
-
     st.markdown(
         '<div class="section-title">'
         '💬 Conversation'
@@ -1076,7 +973,6 @@ else:
     # ========================================================
     # DISPLAY CHAT HISTORY
     # ========================================================
-
     for message in st.session_state.messages:
 
         if message["role"] == "user":
@@ -1106,7 +1002,6 @@ else:
     # ========================================================
     # VOICE INPUT
     # ========================================================
-
     st.markdown("### 🎤 Voice Input")
 
     if get_voice_input is not None:
@@ -1141,7 +1036,6 @@ else:
     # ========================================================
     # VOICE MESSAGE PROCESSING
     # ========================================================
-
     if st.session_state.voice_text:
 
         prompt = st.session_state.voice_text
@@ -1172,10 +1066,10 @@ else:
 
                 try:
 
-                    response = run_gemini_with_retry(
-                        prompt,
-                        st.session_state.age_group,
-                        st.session_state.language,
+                    response = health_agent.run(
+                        user_input=prompt,
+                        age_group=st.session_state.age_group,
+                        language=st.session_state.language,
                         conversation_history=conversation_history
                     )
 
@@ -1216,7 +1110,6 @@ else:
     # ========================================================
     # TEXT CHAT
     # ========================================================
-
     prompt = st.chat_input(
         "Ask a health education question..."
     )
@@ -1247,10 +1140,10 @@ else:
 
                 try:
 
-                    response = run_gemini_with_retry(
-                        prompt,
-                        st.session_state.age_group,
-                        st.session_state.language,
+                    response = health_agent.run(
+                        user_input=prompt,
+                        age_group=st.session_state.age_group,
+                        language=st.session_state.language,
                         conversation_history=conversation_history
                     )
 
@@ -1291,7 +1184,6 @@ else:
     # ========================================================
     # DISCLAIMER
     # ========================================================
-
     st.markdown(
         """
         <div class="disclaimer">
@@ -1316,7 +1208,6 @@ else:
 # ============================================================
 # FOOTER
 # ============================================================
-
 st.markdown(
     """
     <br>

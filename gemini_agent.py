@@ -6,655 +6,356 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
 
-# ============================================================
+# ============================================
 # LOAD ENVIRONMENT VARIABLES
-# ============================================================
+# ============================================
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    print("❌ GEMINI_API_KEY not found in .env file")
+    print("⚠️ GEMINI_API_KEY not found in .env file")
     print("Please add:")
-    print("GEMINI_API_KEY=YOUR_API_KEY")
-    raise RuntimeError("GEMINI_API_KEY is missing from .env file")
+    print("GEMINI_API_KEY='your_api_key_here'")
+    raise RuntimeError("GEMINI_API_KEY is missing from .env")
 
 
-# ============================================================
+# ============================================
 # GEMINI CLIENT
-# ============================================================
+# ============================================
 
 try:
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    client = genai.Client(
-        api_key=GEMINI_API_KEY
-    )
-
-    # Current Gemini model
-    MODEL_NAME = "gemini-3.8-flash"
-
-    print(f"✅ Gemini client initialized")
-    print(f"✅ Using Gemini model: {MODEL_NAME}")
+    print("✅ Gemini client initialized")
 
 except Exception as e:
-
     print(f"❌ Failed to initialize Gemini client: {e}")
-
-    raise RuntimeError(
-        f"Gemini client initialization failed: {e}"
-    ) from e
+    raise
 
 
-# ============================================================
-# CACHE SYSTEM
-# ============================================================
+# ============================================
+# MODEL
+# ============================================
+
+MODEL_NAME = "gemini-3.8-flash"
+
+print(f"✅ Using Gemini model: {MODEL_NAME}")
+
+
+# ============================================
+# CACHE SETTINGS
+# ============================================
 
 CACHE_FILE = "response_cache.json"
 
+CACHE_DURATION_HOURS = 24
 
-class ResponseCache:
 
-    def __init__(self, cache_duration_hours=24):
+def load_cache():
+    """
+    Load saved responses from the cache file.
+    """
 
-        self.cache_duration = timedelta(
-            hours=cache_duration_hours
-        )
-
-        self.cache = self.load()
-
-    # --------------------------------------------------------
-    # LOAD CACHE
-    # --------------------------------------------------------
-
-    def load(self):
-
-        if os.path.exists(CACHE_FILE):
-
-            try:
-
-                with open(
-                    CACHE_FILE,
-                    "r",
-                    encoding="utf-8"
-                ) as f:
-
-                    return json.load(f)
-
-            except Exception:
-
-                return {}
-
+    if not os.path.exists(CACHE_FILE):
         return {}
 
-    # --------------------------------------------------------
-    # SAVE CACHE
-    # --------------------------------------------------------
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
 
-    def save(self):
+    except Exception:
+        return {}
 
-        try:
 
-            with open(
-                CACHE_FILE,
-                "w",
-                encoding="utf-8"
-            ) as f:
+def save_cache(cache):
+    """
+    Save responses to the cache file.
+    """
 
-                json.dump(
-                    self.cache,
-                    f,
-                    indent=2,
-                    ensure_ascii=False
-                )
-
-        except Exception as e:
-
-            print(
-                f"⚠️ Could not save cache: {e}"
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as file:
+            json.dump(
+                cache,
+                file,
+                indent=2,
+                ensure_ascii=False
             )
 
-    # --------------------------------------------------------
-    # CREATE CACHE KEY
-    # --------------------------------------------------------
+    except Exception as e:
+        print(f"⚠️ Could not save cache: {e}")
 
-    def get_key(
-        self,
-        query,
-        age_group,
-        language,
-        conversation_history=None
-    ):
 
-        history_text = json.dumps(
-            conversation_history or [],
-            ensure_ascii=False,
-            sort_keys=True
-        )
+def create_cache_key(
+    user_input,
+    age_group,
+    language,
+    conversation_history
+):
+    """
+    Create a unique MD5 cache key.
+    """
 
-        raw_key = (
-            f"{query}|"
-            f"{age_group}|"
-            f"{language}|"
-            f"{history_text}"
-        )
+    cache_data = {
+        "user_input": user_input,
+        "age_group": age_group,
+        "language": language,
+        "conversation_history": conversation_history
+    }
 
-        return hashlib.md5(
-            raw_key.encode("utf-8")
-        ).hexdigest()
+    cache_string = json.dumps(
+        cache_data,
+        sort_keys=True,
+        ensure_ascii=False
+    )
 
-    # --------------------------------------------------------
-    # GET CACHE
-    # --------------------------------------------------------
+    return hashlib.md5(
+        cache_string.encode("utf-8")
+    ).hexdigest()
 
-    def get(
-        self,
-        query,
-        age_group,
-        language,
-        conversation_history=None
-    ):
 
-        key = self.get_key(
-            query,
-            age_group,
-            language,
-            conversation_history
-        )
+def get_cached_response(cache_key):
+    """
+    Return cached response if it is still valid.
+    """
 
-        if key not in self.cache:
+    cache = load_cache()
 
-            return None
-
-        data = self.cache[key]
-
-        try:
-
-            timestamp = datetime.fromisoformat(
-                data["timestamp"]
-            )
-
-            if (
-                datetime.now() - timestamp
-                < self.cache_duration
-            ):
-
-                return data["response"]
-
-        except Exception:
-
-            return None
-
+    if cache_key not in cache:
         return None
 
-    # --------------------------------------------------------
-    # SET CACHE
-    # --------------------------------------------------------
+    cached_item = cache[cache_key]
 
-    def set(
-        self,
-        query,
-        age_group,
-        language,
-        response,
-        conversation_history=None
-    ):
-
-        key = self.get_key(
-            query,
-            age_group,
-            language,
-            conversation_history
+    try:
+        cached_time = datetime.fromisoformat(
+            cached_item["timestamp"]
         )
 
-        self.cache[key] = {
+        expiry_time = cached_time + timedelta(
+            hours=CACHE_DURATION_HOURS
+        )
 
-            "response": response,
+        if datetime.now() < expiry_time:
 
-            "timestamp":
-                datetime.now().isoformat()
-        }
+            print("⚡ Using cached response")
 
-        self.save()
+            return cached_item["response"]
+
+        else:
+            # Remove expired cache entry
+            del cache[cache_key]
+            save_cache(cache)
+
+    except Exception:
+        return None
+
+    return None
 
 
-cache = ResponseCache()
+def cache_response(cache_key, response):
+    """
+    Store a response in the cache.
+    """
+
+    cache = load_cache()
+
+    cache[cache_key] = {
+        "timestamp": datetime.now().isoformat(),
+        "response": response
+    }
+
+    save_cache(cache)
 
 
-# ============================================================
+# ============================================
 # HEALTH KEYWORDS
-# ============================================================
+# ============================================
 
 HEALTH_KEYWORDS = [
-
-    # --------------------------------------------------------
-    # Symptoms
-    # --------------------------------------------------------
-
+    # General health
+    "health",
+    "healthy",
     "symptom",
+    "symptoms",
+    "disease",
+    "illness",
+    "condition",
+    "medical",
+    "medicine",
+    "doctor",
+    "hospital",
+    "clinic",
+    "patient",
+
+    # Common symptoms
     "pain",
-    "ache",
+    "headache",
     "fever",
     "cough",
     "cold",
     "flu",
-    "headache",
-    "migraine",
-    "dizzy",
-    "dizziness",
-    "vertigo",
-    "lightheaded",
-    "nausea",
-    "vomit",
+    "sneeze",
+    "sneezing",
     "fatigue",
     "tired",
     "weakness",
-    "swelling",
-    "inflammation",
-    "rash",
-    "itching",
-    "burning",
-    "numbness",
-    "tingling",
-    "stiffness",
+    "dizziness",
+    "nausea",
+    "vomiting",
+    "diarrhea",
+    "constipation",
+    "stomach",
+    "abdomen",
+    "chest pain",
+    "breathing",
+    "breath",
+    "shortness of breath",
+    "heart",
+    "heartbeat",
+    "palpitation",
 
-    # --------------------------------------------------------
-    # Common Diseases
-    # --------------------------------------------------------
-
+    # Common conditions
     "diabetes",
+    "blood pressure",
     "hypertension",
-    "high blood pressure",
-    "heart disease",
     "asthma",
+    "migraine",
     "allergy",
-    "sinusitis",
+    "allergic",
+    "infection",
+    "virus",
+    "bacteria",
+    "covid",
     "pneumonia",
-    "copd",
     "bronchitis",
-    "arthritis",
-    "rheumatoid",
-    "osteoarthritis",
-    "gout",
-    "osteoporosis",
-    "fibromyalgia",
-    "chronic",
-    "acute",
-    "depression",
     "anxiety",
     "stress",
-    "panic",
-    "ptsd",
-    "bipolar",
-    "schizophrenia",
-    "ocd",
-    "adhd",
-    "autism",
-    "alzheimer",
-    "dementia",
-    "memory loss",
-    "forget",
-    "forgetting",
-    "parkinson",
-    "multiple sclerosis",
-    "epilepsy",
-    "seizure",
+    "depression",
 
-    # --------------------------------------------------------
-    # Infectious Diseases
-    # --------------------------------------------------------
-
-    "measles",
-    "mumps",
-    "rubella",
-    "chickenpox",
-    "polio",
-    "tetanus",
-    "diphtheria",
-    "pertussis",
-    "whooping cough",
-    "hiv",
-    "aids",
-    "hepatitis",
-    "typhoid",
-    "cholera",
-    "malaria",
-    "dengue",
-    "zika",
-    "ebola",
-    "covid",
-    "corona",
-    "influenza",
-    "tuberculosis",
-    "tb",
-    "food poisoning",
-    "food pois",
-    "strep throat",
-    "tonsillitis",
-    "laryngitis",
-    "pharyngitis",
-    "gastroenteritis",
-    "appendicitis",
-    "pancreatitis",
-    "peritonitis",
-    "cellulitis",
-    "abscess",
-    "boil",
-    "warts",
-    "herpes",
-    "shingles",
-    "cold sore",
-    "yeast infection",
-    "thrush",
-    "ringworm",
-    "athlete foot",
-
-    # --------------------------------------------------------
-    # Body Parts
-    # --------------------------------------------------------
-
-    "heart",
-    "lung",
-    "kidney",
-    "liver",
-    "brain",
-    "spine",
-    "bone",
-    "joint",
-    "muscle",
-    "nerve",
-    "skin",
-    "blood",
-    "stomach",
-    "intestine",
-    "colon",
-    "rectum",
-    "bladder",
-    "prostate",
-    "ovary",
-    "uterus",
-    "cervix",
-    "breast",
-    "breast health",
-    "testicle",
-    "penis",
-    "vagina",
-    "pelvic",
-    "shoulder",
-    "knee",
-    "hip",
-    "ankle",
-    "wrist",
-    "elbow",
-    "neck",
-    "back",
-    "chest",
-    "chest pain",
-    "abdomen",
+    # Body parts
     "head",
-    "face",
     "eye",
     "ear",
     "nose",
     "throat",
-    "mouth",
+    "neck",
+    "shoulder",
+    "arm",
+    "hand",
+    "leg",
+    "foot",
+    "back",
+    "skin",
     "tooth",
-    "gum",
-    "hair",
-    "hair loss",
-    "hairfall",
-    "bald",
-    "balding",
+    "teeth",
 
-    # --------------------------------------------------------
-    # Medical Terms
-    # --------------------------------------------------------
-
-    "medical",
-    "doctor",
-    "hospital",
-    "clinic",
-    "pharmacy",
-    "medicine",
-    "pill",
-    "tablet",
-    "capsule",
-    "syrup",
-    "injection",
-    "vaccine",
-    "vaccination",
-    "immunization",
-    "antibiotic",
-    "prescription",
-    "diagnosis",
-    "treatment",
-    "therapy",
-    "surgery",
-    "operation",
-    "emergency",
-    "ambulance",
-    "x-ray",
-    "mri",
-    "ct scan",
-    "ultrasound",
-    "biopsy",
-    "screening",
-    "checkup",
-    "physical exam",
-    "blood test",
-    "urine test",
-    "stool test",
-    "pap smear",
-    "mammogram",
-
-    # --------------------------------------------------------
-    # Health & Wellness
-    # --------------------------------------------------------
-
-    "health",
-    "wellness",
-    "fitness",
+    # Health activities
     "exercise",
+    "workout",
+    "fitness",
     "diet",
     "nutrition",
-    "vitamin",
-    "mineral",
-    "supplement",
-    "herbal",
+    "food",
     "sleep",
-    "insomnia",
-    "rest",
-    "relaxation",
-    "meditation",
-    "mental health",
-    "emotional",
-    "psychological",
-    "pregnancy",
-    "pregnant",
-    "childbirth",
-    "labor",
-    "delivery",
-    "breastfeeding",
-    "lactation",
-    "infant",
-    "baby",
-    "child",
-    "elderly",
-    "senior",
-    "aging",
-    "geriatric",
+    "weight",
+    "water",
+    "hydration",
 
-    # --------------------------------------------------------
-    # Caregiving
-    # --------------------------------------------------------
-
-    "caregiver",
-    "caregiving",
-    "caretaker",
-    "nurse",
-    "support",
-    "assistance",
-    "help",
-    "aid",
-    "home care",
-    "hospice",
-    "palliative",
-    "rehab",
-    "recovery",
-
-    # --------------------------------------------------------
-    # Prevention
-    # --------------------------------------------------------
-
-    "prevention",
-    "prevent",
-    "avoid",
-    "risk",
-    "safety",
-    "hygiene",
-    "wash hands",
-    "mask",
-    "sanitize",
-    "quarantine",
-    "isolation",
-    "social distancing",
-
-    # --------------------------------------------------------
-    # Additional Diseases
-    # --------------------------------------------------------
-
-    "monkeypox",
-    "hand foot mouth",
-    "kawasaki",
-    "scarlet fever",
-    "gastritis",
-    "ulcer",
-    "ibs",
-    "crohn",
-    "colitis",
-    "kidney stone",
-    "uti",
-    "urinary",
-    "eczema",
-    "psoriasis",
-    "acne",
-    "skin cancer",
-    "melanoma",
-    "thyroid",
-    "hyperthyroid",
-    "hypothyroid",
-    "goiter",
-    "anemia",
-    "hemophilia",
-    "leukemia",
-    "lymphoma",
-    "glaucoma",
-    "cataract",
-    "conjunctivitis",
-    "meningitis",
-    "encephalitis",
-    "sepsis",
+    # Emergency
+    "emergency",
+    "severe",
+    "bleeding",
+    "unconscious",
+    "fainting",
+    "seizure",
     "stroke",
     "heart attack",
-    "cardiac",
-    "angina"
+
+    # Medicine
+    "tablet",
+    "medicine",
+    "medication",
+    "dose",
+    "dosage",
+    "prescription",
+    "drug",
+    "antibiotic"
 ]
 
 
-# ============================================================
-# HEALTH FILTER
-# ============================================================
+# ============================================
+# HEALTH QUERY FILTER
+# ============================================
 
 def is_health_related(query):
+    """
+    Check whether a user query is related to health.
+    """
 
     query_lower = query.lower()
 
     for keyword in HEALTH_KEYWORDS:
 
         if keyword in query_lower:
-
             return True
 
     return False
 
 
-# ============================================================
-# SHORT-TERM MEMORY
-# ============================================================
+# ============================================
+# CONVERSATION HISTORY
+# ============================================
 
-def format_conversation_history(
-    conversation_history
-):
-
+def format_conversation_history(conversation_history):
     """
-    Convert previous conversation messages
-    into readable text for Gemini.
+    Convert conversation history into readable text.
     """
 
     if not conversation_history:
+        return "No previous conversation."
 
-        return (
-            "No previous conversation. "
-            "This is the first message."
-        )
-
-    history_lines = []
+    formatted_history = []
 
     for message in conversation_history:
 
-        role = message.get(
-            "role",
-            "user"
-        )
-
-        content = message.get(
-            "content",
-            ""
-        )
-
-        if not content:
-
-            continue
+        role = message.get("role", "")
+        content = message.get("content", "")
 
         if role == "user":
-
-            speaker = "USER"
+            formatted_history.append(
+                f"USER: {content}"
+            )
 
         elif role == "assistant":
+            formatted_history.append(
+                f"ASSISTANT: {content}"
+            )
 
-            speaker = "ASSISTANT"
-
-        else:
-
-            speaker = role.upper()
-
-        history_lines.append(
-            f"{speaker}: {content}"
-        )
-
-    if not history_lines:
-
-        return (
-            "No previous conversation. "
-            "This is the first message."
-        )
-
-    return "\n".join(history_lines)
+    return "\n".join(formatted_history)
 
 
-# ============================================================
-# RETRY FUNCTION
-# ============================================================
+# ============================================
+# MAIN GEMINI FUNCTION WITH RETRY
+# ============================================
 
 def run_gemini_with_retry(
     user_input,
     age_group="All Ages",
     language="English",
-    conversation_history=None,
-    max_retries=3
+    conversation_history=None
 ):
+    """
+    Run Gemini with automatic retry.
+    """
+
+    if conversation_history is None:
+        conversation_history = []
+
+    max_retries = 3
 
     for attempt in range(max_retries):
 
@@ -670,35 +371,31 @@ def run_gemini_with_retry(
         except Exception as e:
 
             print(
-                f"❌ Gemini attempt "
-                f"{attempt + 1}/{max_retries} failed: {e}"
+                f"⚠️ Gemini request failed "
+                f"(attempt {attempt + 1}/{max_retries}): {e}"
             )
 
-            if attempt == max_retries - 1:
+            if attempt < max_retries - 1:
 
-                return f"""
-⚠️ Sorry, I couldn't process your request.
+                wait_time = 2 ** attempt
 
-Error: {str(e)}
+                print(
+                    f"⏳ Retrying in {wait_time} seconds..."
+                )
 
-Please try:
-1. Refreshing the page
-2. Checking your Gemini API key
-3. Checking your internet connection
-4. Rephrasing your question
-"""
+                time.sleep(wait_time)
 
-            # Wait before retry
-            time.sleep(
-                2 ** attempt
-            )
+            else:
 
-    return "Unable to process your request."
+                return (
+                    "⚠️ Sorry, I could not process your request "
+                    "right now. Please try again in a moment."
+                )
 
 
-# ============================================================
-# MAIN GEMINI FUNCTION
-# ============================================================
+# ============================================
+# GEMINI REQUEST
+# ============================================
 
 def run_gemini(
     user_input,
@@ -706,268 +403,263 @@ def run_gemini(
     language="English",
     conversation_history=None
 ):
+    """
+    Send the health question to Gemini.
+    """
 
-    try:
+    if conversation_history is None:
+        conversation_history = []
 
-        # ----------------------------------------------------
-        # MAKE SURE HISTORY EXISTS
-        # ----------------------------------------------------
 
-        if conversation_history is None:
+    # ========================================
+    # FORMAT HISTORY
+    # ========================================
 
-            conversation_history = []
+    history_text = format_conversation_history(
+        conversation_history
+    )
 
-        # ----------------------------------------------------
-        # FORMAT HISTORY
-        # ----------------------------------------------------
 
-        history_text = format_conversation_history(
-            conversation_history
+    # ========================================
+    # CACHE
+    # ========================================
+
+    cache_key = create_cache_key(
+        user_input=user_input,
+        age_group=age_group,
+        language=language,
+        conversation_history=conversation_history
+    )
+
+    cached_response = get_cached_response(
+        cache_key
+    )
+
+    if cached_response:
+        return cached_response
+
+
+    # ========================================
+    # HEALTH FILTER
+    # ========================================
+
+    if not is_health_related(user_input):
+
+        return (
+            "I am a health education assistant. "
+            "Please ask me a health-related question "
+            "about symptoms, diseases, prevention, "
+            "nutrition, fitness, or general health."
         )
 
-        # ----------------------------------------------------
-        # CHECK CACHE
-        # ----------------------------------------------------
 
-        cached_response = cache.get(
-            user_input,
-            age_group,
-            language,
-            conversation_history
-        )
+    # ========================================
+    # LANGUAGE INSTRUCTIONS
+    # ========================================
 
-        if cached_response:
+    language_instruction = ""
 
-            print(
-                "✅ Using cached response"
-            )
+    if language.lower() == "urdu":
 
-            return cached_response
-
-        # ----------------------------------------------------
-        # HEALTH FILTER
-        # ----------------------------------------------------
-
-        if not is_health_related(
-            user_input
-        ):
-
-            return f"""
-I'm a Health Education Assistant focused on
-providing information about symptoms, diseases,
-and health conditions.
-
-Your question:
-
-"{user_input}"
-
-Please ask a health-related question such as:
-
-• What is diabetes?
-• What are the symptoms of high blood pressure?
-• What is arthritis?
-• What is food poisoning?
-• What is dizziness?
-• What causes headaches?
-• What are prevention tips for flu?
-
-⚠️ Educational information only.
-Please consult a qualified healthcare professional
-for medical advice.
+        language_instruction = """
+Respond primarily in simple Urdu.
+You may use common English medical terms
+when they make the explanation clearer.
 """
 
-        # ----------------------------------------------------
-        # LANGUAGE
-        # ----------------------------------------------------
+    elif language.lower() == "hindi":
 
-        language_instructions = {
-
-            "English":
-                "Respond in English.",
-
-            "Urdu":
-                "Respond in Urdu using Urdu script (اردو).",
-
-            "Hindi":
-                "Respond in Hindi using Devanagari script (हिंदी).",
-
-            "Spanish":
-                "Respond in Spanish.",
-
-            "French":
-                "Respond in French.",
-
-            "Arabic":
-                "Respond in Arabic using Arabic script (العربية)."
-        }
-
-        lang_instruction = language_instructions.get(
-            language,
-            "Respond in English."
-        )
-
-        # ----------------------------------------------------
-        # SYSTEM INSTRUCTION
-        # ----------------------------------------------------
-
-        system_instruction = f"""
-You are a Health Education Assistant.
-
-Your role is to provide clear, safe,
-educational health information.
-
-You are NOT a doctor.
-
-You must not diagnose a user.
-
-You must not claim certainty about a
-user's medical condition.
-
-You must not replace professional
-medical advice.
-
-Use the conversation history to understand
-follow-up questions.
-
-If the user says things such as:
-
-"it"
-"its"
-"they"
-"that"
-"the symptoms"
-"what about this?"
-
-use the previous conversation to understand
-what they are referring to.
-
-Do not invent information that is not present
-in the conversation.
-
-TARGET AGE GROUP:
-{age_group}
-
-LANGUAGE:
-{language}
-
-LANGUAGE INSTRUCTION:
-{lang_instruction}
-
-Always keep the response educational,
-clear, and appropriate for the selected
-age group.
-
-For urgent or potentially serious symptoms,
-recommend seeking appropriate professional
-medical care.
-
-Do not provide a diagnosis.
-
-Do not present your response as personalized
-medical treatment.
-
-Include an educational disclaimer when
-appropriate.
+        language_instruction = """
+Respond primarily in simple Hindi.
+You may use common English medical terms
+when they make the explanation clearer.
 """
 
-        # ----------------------------------------------------
-        # USER PROMPT
-        # ----------------------------------------------------
+    elif language.lower() == "arabic":
 
-        prompt = f"""
-PREVIOUS CONVERSATION:
+        language_instruction = """
+Respond primarily in simple Arabic.
+You may use common English medical terms
+when they make the explanation clearer.
+"""
 
-----------------------------------------
+    else:
+
+        language_instruction = """
+Respond in clear, simple English.
+"""
+
+
+    # ========================================
+    # SYSTEM INSTRUCTION
+    # ========================================
+
+    system_instruction = f"""
+You are a responsible AI Health Education Assistant.
+
+Your purpose is to provide general health education
+and symptom information.
+
+IMPORTANT SAFETY RULES:
+
+1. Do NOT diagnose the user.
+
+2. Do NOT claim certainty about a medical condition.
+
+3. Do NOT replace a doctor or qualified healthcare professional.
+
+4. Explain possible causes or possibilities carefully.
+
+5. For symptoms, explain common possible causes first,
+   followed by less common but important possibilities
+   when appropriate.
+
+6. Clearly identify emergency warning signs.
+
+7. If the user describes potentially life-threatening
+   symptoms, advise them to seek emergency medical care
+   immediately.
+
+8. Never tell the user to ignore serious symptoms.
+
+9. Do not recommend prescription medicines or specific
+   prescription dosages.
+
+10. For medications, provide general educational
+    information and encourage consultation with a
+    healthcare professional.
+
+11. Use simple language suitable for a general audience.
+
+12. Do not create unnecessary fear.
+
+13. Do not provide a definitive diagnosis.
+
+14. Respect the selected age group:
+    {age_group}
+
+15. Respect the selected language:
+    {language}
+
+{language_instruction}
+
+For emergency symptoms such as severe chest pain,
+difficulty breathing, severe bleeding, loss of consciousness,
+stroke-like symptoms, or other potentially life-threatening
+situations, clearly tell the user to contact local emergency
+services or go to the nearest emergency medical facility.
+
+Always include an appropriate reminder that the information
+is educational and does not replace professional medical care.
+"""
+
+
+    # ========================================
+    # USER PROMPT
+    # ========================================
+
+    prompt = f"""
+Previous conversation:
+
 {history_text}
-----------------------------------------
 
-CURRENT USER QUESTION:
+
+Current user question:
 
 {user_input}
 
-Please answer the current question using
-the previous conversation when relevant.
 
-If this is a follow-up question, do not ask
-the user to repeat information that is already
-available in the conversation.
+Please answer the user's health question.
 
-Provide useful educational information.
+Use this structure when appropriate:
 
-When appropriate, organize the response using:
+### Overview
+Briefly explain the topic.
 
-## 📋 Overview
+### Possible Causes
+Explain common possible causes without diagnosing.
 
-## 🔍 How This Affects {age_group}
+### Common Symptoms
+List relevant symptoms.
 
-## ⚠️ Signs to Watch For
+### What You Can Do
+Give safe general self-care or health information.
 
-## 🏠 Self-Care Information
+### When to Seek Medical Help
+Explain warning signs and when professional care is needed.
 
-## 🚨 When to Seek Medical Care
+### Important
+Include a short medical disclaimer.
 
-## 💡 Prevention Tips
-
-Do not force every section if it is not relevant.
-
-Remember:
-
-This is educational information only.
-It is not a diagnosis, personalized treatment,
-or replacement for professional medical care.
+Do not force sections when they are not relevant.
+Keep the response useful, clear, and reasonably concise.
 """
 
-        # ----------------------------------------------------
-        # SEND REQUEST
-        # ----------------------------------------------------
 
-        print(
-            "Sending request to Gemini..."
+    # ========================================
+    # GEMINI API REQUEST
+    # ========================================
+
+    print("Sending request to Gemini...")
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.4,
+            max_output_tokens=1200
         )
+    )
 
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config={
-                "system_instruction":
-                    system_instruction,
-                "temperature": 0.4,
-                "max_output_tokens": 1200
-            }
-        )
 
-        # ----------------------------------------------------
-        # GET RESPONSE TEXT
-        # ----------------------------------------------------
+    # ========================================
+    # GET RESPONSE TEXT
+    # ========================================
 
-        result = response.text
+    result = response.text
 
-        if not result:
 
-            raise RuntimeError(
-                "Gemini returned an empty response."
-            )
-
-        # ----------------------------------------------------
-        # SAVE CACHE
-        # ----------------------------------------------------
-
-        cache.set(
-            user_input,
-            age_group,
-            language,
-            result,
-            conversation_history
-        )
-
-        print(
-            "✅ Response received!"
-        )
-
-        return result
-
-    except Exception as e:
+    if not result:
 
         raise RuntimeError(
-            f"Gemini API error: {str(e)}"
-        ) from e
+            "Gemini returned an empty response."
+        )
+
+
+    # ========================================
+    # CACHE RESPONSE
+    # ========================================
+
+    cache_response(
+        cache_key=cache_key,
+        response=result
+    )
+
+
+    print("✅ Response received!")
+
+    return result
+
+
+# ============================================
+# SIMPLE TEST
+# ============================================
+
+if __name__ == "__main__":
+
+    print("\n========================================")
+    print("Testing Gemini Health Agent")
+    print("========================================\n")
+
+    test_question = "What are common symptoms of flu?"
+
+    response = run_gemini_with_retry(
+        user_input=test_question,
+        age_group="Adults",
+        language="English",
+        conversation_history=[]
+    )
+
+    print("\n--- Gemini Response ---\n")
+    print(response)
