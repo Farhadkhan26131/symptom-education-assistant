@@ -1,3 +1,36 @@
+
+"""
+AI Health Education Assistant
+
+=============================
+
+Streamlit application layer.
+
+Architecture:
+
+User
+  ↓
+Streamlit UI
+  ↓
+Persistent Session Layer
+  ↓
+Short-Term Memory + Compact Summary
+  ↓
+Intent / Agent Routing
+  ↓
+Optional Local Health Tool
+  ↓
+Gemini Primary
+  ↓
+Groq Fallback
+  ↓
+Persistent Session + Analytics
+
+This application provides general health education only.
+
+It is NOT a diagnostic or treatment system.
+"""
+
 import streamlit as st
 import time
 import random
@@ -7,32 +40,82 @@ from datetime import datetime
 # ============================================================
 # AGENT IMPORT
 # ============================================================
+
 from agent import HealthAgent
+
+# ============================================================
+# DIRECT GEMINI LAYER
+# ============================================================
+
+try:
+    from gemini_agent import run_gemini_with_retry
+except ImportError:
+    run_gemini_with_retry = None
+
+# ============================================================
+# DATABASE IMPORT
+# ============================================================
+
 from database import ChatDatabase
 
+# ============================================================
+# SESSION MANAGER IMPORT
+# ============================================================
+
+from session_manager import SessionManager
 
 # ============================================================
-# OPTIONAL IMPORTS
+# OPTIONAL ANALYTICS IMPORT
 # ============================================================
+
 try:
     from analytics_dashboard import show_analytics
 except ImportError:
-    show_analytics = None
+    try:
+        from analytics_dashboard import show_analytics_dashboard
+
+        def show_analytics():
+            show_analytics_dashboard(db)
+
+    except ImportError:
+        show_analytics = None
+
+# ============================================================
+# OPTIONAL VOICE INPUT
+# ============================================================
 
 try:
     from voice_input import get_voice_input
 except ImportError:
     get_voice_input = None
 
+# ============================================================
+# OPTIONAL PDF EXPORT
+# ============================================================
+
 try:
     from pdf_export import create_pdf
 except ImportError:
     create_pdf = None
 
+try:
+    from pdf_export import generate_health_report
+except ImportError:
+    generate_health_report = None
+
+# ============================================================
+# OPTIONAL LOCAL HEALTH TOOL
+# ============================================================
+
+try:
+    from tools import search_symptom_information
+except ImportError:
+    search_symptom_information = None
 
 # ============================================================
 # PAGE CONFIGURATION
 # ============================================================
+
 st.set_page_config(
     page_title="Health Assistant",
     page_icon="🩺",
@@ -40,67 +123,57 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+MAX_CONTEXT_MESSAGES = 12
+SESSION_TTL_HOURS = 24
+
+SUMMARY_TRIGGER = MAX_CONTEXT_MESSAGES + 6
+MAX_SUMMARY_ITEMS = 6
+MAX_TOOL_CONTEXT_CHARS = 1200
 
 # ============================================================
 # DATABASE
 # ============================================================
-db = ChatDatabase()
 
+db = ChatDatabase()
 
 # ============================================================
 # HEALTH AGENT
 # ============================================================
+
 health_agent = HealthAgent()
 
+# ============================================================
+# SESSION MANAGER
+# ============================================================
+
+session_manager = SessionManager(
+    sessions_dir="sessions",
+    ttl_hours=SESSION_TTL_HOURS
+)
 
 # ============================================================
-# SESSION STATE INITIALIZATION
+# DEFAULT ASSISTANT GREETING
 # ============================================================
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "👋 Hello! I'm your Health Assistant. "
-                "I can provide general educational information about "
-                "symptoms, prevention, self-care, and healthy habits. "
-                "Please remember that I am not a doctor and cannot "
-                "diagnose or treat medical conditions."
-            )
-        }
-    ]
 
-if "age_group" not in st.session_state:
-    st.session_state.age_group = "Adults"
-
-if "language" not in st.session_state:
-    st.session_state.language = "English"
-
-if "query_count" not in st.session_state:
-    st.session_state.query_count = 0
-
-if "quick_topic" not in st.session_state:
-    st.session_state.quick_topic = None
-
-if "theme" not in st.session_state:
-    st.session_state.theme = "Dark"
-
-if "process_quick_topic" not in st.session_state:
-    st.session_state.process_quick_topic = False
-
-if "user_id" not in st.session_state:
-    st.session_state.user_id = str(random.randint(1000, 9999))
-
-if "current_page" not in st.session_state:
-    st.session_state.current_page = "Health Assistant"
-
-if "voice_text" not in st.session_state:
-    st.session_state.voice_text = ""
-
+DEFAULT_GREETING = {
+    "role": "assistant",
+    "content": (
+        "👋 Hello! I'm your Health Assistant. "
+        "I can provide general educational information about "
+        "symptoms, prevention, self-care, and healthy habits. "
+        "Please remember that I am not a doctor and cannot "
+        "diagnose or treat medical conditions."
+    )
+}
 
 # ============================================================
 # RATE LIMITER
 # ============================================================
+
 rate_limit_data = {}
 
 MAX_REQUESTS = 20
@@ -108,6 +181,10 @@ TIME_WINDOW = 60
 
 
 def check_rate_limit(user_id):
+    """
+    Allow a maximum number of requests within a time window.
+    """
+
     current_time = time.time()
 
     if user_id not in rate_limit_data:
@@ -130,9 +207,10 @@ def check_rate_limit(user_id):
 # ============================================================
 # CLEAN AI RESPONSE
 # ============================================================
+
 def clean_ai_response(text):
     """
-    Clean accidental HTML and Streamlit artifacts
+    Clean accidental HTML and formatting artifacts
     from AI-generated responses.
     """
 
@@ -141,56 +219,56 @@ def clean_ai_response(text):
 
     text = str(text)
 
-    # Remove SVG/anchor artifacts
+    # Remove SVG / anchor artifacts.
     text = re.sub(
-        r'\[\s*svg\s*\]\([^)]*\)',
-        '',
+        r"\[?\s*svg\s*\]?\([^)]*\)",
+        "",
         text,
         flags=re.IGNORECASE
     )
 
-    # Remove accidental Health Assistant HTML wrapper
+    # Remove accidental Health Assistant HTML wrapper.
     text = re.sub(
-        r'<strong>\s*\*?\s*🩺\s*Health Assistant\s*\*?\s*</strong>',
-        '',
+        r"<strong>\s*[/\\*]*\s*🩺\s*Health Assistant\s*[/\\*]*\s*</strong>",
+        "",
         text,
         flags=re.IGNORECASE
     )
 
-    # Convert <br> to newline
+    # Convert <br> tags to new lines.
     text = re.sub(
-        r'<br\s*/?>',
-        '\n',
+        r"<br\s*/?>",
+        "\n",
         text,
         flags=re.IGNORECASE
     )
 
-    # Remove div tags
+    # Remove div tags.
     text = re.sub(
-        r'</?div[^>]*>',
-        '',
+        r"</?div[^>]*>",
+        "",
         text,
         flags=re.IGNORECASE
     )
 
-    # Remove markdown code fences
+    # Remove markdown code fences.
     text = re.sub(
-        r'```(?:html)?\s*',
-        '',
+        r"```(?:html)?\s*",
+        "",
         text,
         flags=re.IGNORECASE
     )
 
     text = re.sub(
-        r'\s*```',
-        '',
+        r"\s*```",
+        "",
         text
     )
 
-    # Remove excessive blank lines
+    # Remove excessive blank lines.
     text = re.sub(
-        r'\n{4,}',
-        '\n\n',
+        r"\n{4,}",
+        "\n\n",
         text
     )
 
@@ -198,18 +276,1165 @@ def clean_ai_response(text):
 
 
 # ============================================================
-# SHORT-TERM MEMORY
+# FOLLOW-UP + SYMPTOM QUESTION PREPARATION
 # ============================================================
+
+def prepare_health_question(user_input, conversation_history):
+    """
+    Prepare the user's question before sending it to Gemini/Groq.
+
+    Handles:
+
+    1. Follow-up questions:
+       "What is a headache?"
+       "What are its common causes?"
+
+    2. Symptom questions:
+       "I feel dizzy, what does it mean?"
+
+    This does not diagnose the user.
+    It only provides context to the AI.
+    """
+
+    if not user_input:
+        return user_input
+
+    text = str(user_input).strip()
+
+    if not text:
+        return text
+
+    lower_text = text.lower()
+
+    # ========================================================
+    # FIND PREVIOUS USER QUESTION
+    # ========================================================
+
+    previous_user_question = None
+
+    for message in reversed(conversation_history or []):
+        if message.get("role") == "user":
+            previous_user_question = message.get("content")
+            break
+
+    # ========================================================
+    # FOLLOW-UP DETECTION
+    # ========================================================
+
+    follow_up_patterns = [
+        "its ",
+        "it's ",
+        "it ",
+        "this ",
+        "that ",
+        "these ",
+        "those ",
+        "their ",
+        "what are its",
+        "what is its",
+        "what are its common causes",
+        "what causes it",
+        "what are the causes",
+        "common causes",
+        "more about it",
+        "tell me more",
+        "what about it",
+        "how about it"
+    ]
+
+    is_follow_up = any(
+        pattern in lower_text
+        for pattern in follow_up_patterns
+    )
+
+    if is_follow_up and previous_user_question:
+
+        return f"""
+FOLLOW-UP HEALTH QUESTION CONTEXT
+
+Previous user question:
+"{previous_user_question}"
+
+Current user question:
+"{text}"
+
+The current question is a follow-up to the previous health topic.
+
+Resolve words such as:
+- it
+- its
+- this
+- that
+- these
+- those
+- their
+
+using the health topic from the previous question.
+
+For example:
+If the previous question is about "headache" and the current
+question says "What are its common causes?", understand "its"
+as referring to "headache".
+
+Answer the current question directly and naturally.
+
+Do not mention this instruction.
+Do not mention that you are resolving context.
+Do not say that the user needs to ask another question.
+
+CURRENT QUESTION:
+{text}
+"""
+
+    # ========================================================
+    # SYMPTOM DETECTION
+    # ========================================================
+
+    symptom_words = [
+        "dizzy",
+        "dizziness",
+        "vertigo",
+        "headache",
+        "head pain",
+        "stomach pain",
+        "stomach ache",
+        "back pain",
+        "joint pain",
+        "itching",
+        "sore throat",
+        "cough",
+        "fever",
+        "nausea",
+        "vomiting",
+        "fatigue",
+        "weakness",
+        "shortness of breath",
+        "rash",
+        "swelling",
+        "pain"
+    ]
+
+    has_symptom = any(
+        symptom in lower_text
+        for symptom in symptom_words
+    )
+
+    if has_symptom:
+
+        return f"""
+HEALTH SYMPTOM QUESTION
+
+The user is asking about a health symptom.
+
+User question:
+"{text}"
+
+Treat this as a valid health education question.
+
+Provide simple, general educational information.
+
+Explain possible common meanings or causes without diagnosing
+the user.
+
+Include appropriate safety guidance.
+
+If symptoms are severe, sudden, worsening, or concerning,
+recommend seeking professional medical care.
+
+Do not diagnose the user.
+Do not prescribe medication.
+Do not provide medication doses.
+
+Answer the user's question directly.
+
+USER QUESTION:
+{text}
+"""
+
+    # ========================================================
+    # NORMAL QUESTION
+    # ========================================================
+
+    return text
+
+
+# ============================================================
+# SESSION INITIALIZATION
+# ============================================================
+
+def initialize_session():
+    """
+    Create or restore the persistent SessionManager session.
+    """
+
+    # --------------------------------------------------------
+    # Restore existing session
+    # --------------------------------------------------------
+
+    if "session_id" in st.session_state:
+
+        existing_session_id = st.session_state.session_id
+
+        saved_session = session_manager.load_session(
+            existing_session_id
+        )
+
+        if saved_session is not None:
+
+            state = saved_session.get("state", {})
+
+            st.session_state.messages = state.get(
+                "history",
+                [DEFAULT_GREETING.copy()]
+            )
+
+            st.session_state.summary = state.get(
+                "summary",
+                ""
+            )
+
+            st.session_state.scratchpad = state.get(
+                "scratchpad",
+                {}
+            )
+
+            st.session_state.last_tool_result = state.get(
+                "last_tool_result",
+                None
+            )
+
+            st.session_state.plan_step = state.get(
+                "plan_step",
+                0
+            )
+
+            st.session_state.turn_state = state.get(
+                "turn_state",
+                {}
+            )
+
+            preferences = state.get(
+                "preferences",
+                {}
+            )
+
+            st.session_state.age_group = preferences.get(
+                "age_group",
+                "Adults"
+            )
+
+            st.session_state.language = preferences.get(
+                "language",
+                "English"
+            )
+
+            st.session_state.theme = preferences.get(
+                "theme",
+                "Dark"
+            )
+
+            st.session_state.query_count = state.get(
+                "query_count",
+                0
+            )
+
+            return
+
+        st.session_state.pop(
+            "session_id",
+            None
+        )
+
+    # ========================================================
+    # CREATE NEW SESSION
+    # ========================================================
+
+    initial_state = {
+        "history": [
+            DEFAULT_GREETING.copy()
+        ],
+        "summary": "",
+        "scratchpad": {},
+        "last_tool_result": None,
+        "plan_step": 0,
+        "turn_state": {},
+        "preferences": {
+            "age_group": "Adults",
+            "language": "English",
+            "theme": "Dark"
+        },
+        "query_count": 0
+    }
+
+    new_session = session_manager.create_session(
+        initial_state=initial_state
+    )
+
+    st.session_state.session_id = new_session["session_id"]
+
+    st.session_state.messages = initial_state["history"]
+    st.session_state.summary = initial_state["summary"]
+    st.session_state.scratchpad = initial_state["scratchpad"]
+    st.session_state.last_tool_result = initial_state["last_tool_result"]
+    st.session_state.plan_step = initial_state["plan_step"]
+    st.session_state.turn_state = initial_state["turn_state"]
+
+    st.session_state.age_group = "Adults"
+    st.session_state.language = "English"
+    st.session_state.theme = "Dark"
+    st.session_state.query_count = 0
+
+
+# ============================================================
+# INITIALIZE SESSION
+# ============================================================
+
+initialize_session()
+
+# ============================================================
+# OTHER STREAMLIT SESSION STATE
+# ============================================================
+
+if "quick_topic" not in st.session_state:
+    st.session_state.quick_topic = None
+
+if "process_quick_topic" not in st.session_state:
+    st.session_state.process_quick_topic = False
+
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(
+        random.randint(1000, 9999)
+    )
+
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "Health Assistant"
+
+if "voice_text" not in st.session_state:
+    st.session_state.voice_text = ""
+
+
+# ============================================================
+# SAVE CURRENT SESSION
+# ============================================================
+
+def save_current_session():
+    """
+    Save application state to persistent JSON.
+    """
+
+    state = {
+        "history": st.session_state.messages,
+        "summary": st.session_state.get(
+            "summary",
+            ""
+        ),
+        "scratchpad": st.session_state.get(
+            "scratchpad",
+            {}
+        ),
+        "last_tool_result": st.session_state.get(
+            "last_tool_result",
+            None
+        ),
+        "plan_step": st.session_state.get(
+            "plan_step",
+            0
+        ),
+        "turn_state": st.session_state.get(
+            "turn_state",
+            {}
+        ),
+        "preferences": {
+            "age_group": st.session_state.age_group,
+            "language": st.session_state.language,
+            "theme": st.session_state.theme
+        },
+        "query_count": st.session_state.query_count
+    }
+
+    try:
+
+        session_manager.save_session(
+            st.session_state.session_id,
+            state
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Session save failed: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# COMPACT MEMORY SUMMARY
+# ============================================================
+
+def build_memory_summary():
+    """
+    Build a small deterministic summary from older conversation.
+
+    This is NOT chain-of-thought.
+    Only simple application-level memory is stored.
+    """
+
+    messages = st.session_state.messages
+
+    if len(messages) <= SUMMARY_TRIGGER:
+
+        return st.session_state.get(
+            "summary",
+            ""
+        )
+
+    older_messages = messages[
+        1:-MAX_CONTEXT_MESSAGES
+    ]
+
+    user_topics = []
+
+    for message in older_messages:
+
+        if message.get("role") != "user":
+            continue
+
+        content = str(
+            message.get("content", "")
+        ).strip()
+
+        if not content:
+            continue
+
+        short_text = re.split(
+            r"[.!?\n]",
+            content
+        )[0].strip()
+
+        if len(short_text) > 140:
+
+            short_text = (
+                short_text[:137] + "..."
+            )
+
+        if (
+            short_text
+            and short_text not in user_topics
+        ):
+
+            user_topics.append(
+                short_text
+            )
+
+    user_topics = user_topics[
+        -MAX_SUMMARY_ITEMS:
+    ]
+
+    if not user_topics:
+
+        return st.session_state.get(
+            "summary",
+            ""
+        )
+
+    summary = (
+        "Earlier conversation topics: "
+        + "; ".join(user_topics)
+        + "."
+    )
+
+    return summary[:1000]
+
+
+# ============================================================
+# SHORT-TERM MEMORY / CONTEXT WINDOW
+# ============================================================
+
 def get_conversation_history():
+    """
+    Return recent conversation messages.
+
+    IMPORTANT:
+    The current user message is already appended to messages,
+    therefore we remove the last message before sending history.
+    """
+
     if len(st.session_state.messages) <= 1:
         return []
 
-    return st.session_state.messages[:-1]
+    previous_messages = (
+        st.session_state.messages[:-1]
+    )
+
+    return previous_messages[
+        -MAX_CONTEXT_MESSAGES:
+    ]
+
+
+# ============================================================
+# AGENT ROUTING LABEL
+# ============================================================
+
+def get_agent_label(intent):
+
+    labels = {
+
+        "emergency":
+            "Emergency Safety Agent",
+
+        "symptom_education":
+            "Symptom Education Agent",
+
+        "prevention":
+            "Prevention Agent",
+
+        "lifestyle":
+            "Lifestyle Agent",
+
+        "general_health":
+            "General Health Agent"
+    }
+
+    return labels.get(
+        intent,
+        "General Health Agent"
+    )
+
+
+# ============================================================
+# LOCAL TOOL TOPIC EXTRACTION
+# ============================================================
+
+def extract_tool_topic(prompt):
+
+    if not prompt:
+        return None
+
+    text = str(prompt).lower()
+
+    known_topics = [
+
+        "diabetes",
+        "headache",
+        "fever",
+        "cough",
+        "cold",
+        "flu",
+        "dizziness",
+        "dizzy",
+        "nausea",
+        "vomiting",
+        "diarrhea",
+        "fatigue",
+        "weakness",
+        "rash",
+        "swelling",
+        "pain"
+    ]
+
+    for topic in known_topics:
+
+        if topic in text:
+            return topic
+
+    return None
+
+
+# ============================================================
+# RUN LOCAL HEALTH TOOL
+# ============================================================
+
+def run_local_health_tool(
+    topic,
+    age_group
+):
+
+    if not topic:
+        return None
+
+    if search_symptom_information is None:
+        return None
+
+    try:
+
+        result = search_symptom_information(
+            symptom=topic,
+            age_group=age_group
+        )
+
+        if result:
+
+            return str(result)[
+                :MAX_TOOL_CONTEXT_CHARS
+            ]
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Local health tool failed: {e}"
+        )
+
+    return None
+
+
+# ============================================================
+# EMERGENCY SAFETY PREFIX
+# ============================================================
+
+def build_emergency_prompt(prompt):
+
+    emergency_prefix = """
+
+IMPORTANT SAFETY NOTICE:
+
+The user's message may describe a potentially serious
+or emergency medical situation.
+
+The response must clearly recommend seeking urgent
+professional medical evaluation.
+
+Do not attempt to diagnose the condition.
+
+Do not provide false reassurance.
+
+If symptoms are severe, worsening, or potentially
+life-threatening, advise the user to contact local
+emergency services or go to the nearest emergency
+medical facility immediately.
+
+Do not provide medication doses.
+
+USER QUESTION:
+
+"""
+
+    return emergency_prefix + prompt
+
+
+# ============================================================
+# UNIFIED MESSAGE PROCESSOR
+# ============================================================
+
+def process_user_message(prompt):
+
+    """
+    Central processing function.
+
+    Flow:
+
+    1. Validate input
+    2. Rate-limit
+    3. Add user message
+    4. Detect intent
+    5. Route to logical agent
+    6. Run optional local tool
+    7. Build short-term memory
+    8. Resolve follow-up question
+    9. Call Gemini with Groq fallback
+    10. Save response
+    11. Update memory
+    12. Update turn state
+    13. Log analytics
+    14. Save persistent session
+    """
+
+    if not prompt:
+        return
+
+    prompt = str(prompt).strip()
+
+    if not prompt:
+        return
+
+    # ========================================================
+    # RATE LIMIT
+    # ========================================================
+
+    if not check_rate_limit(
+        st.session_state.user_id
+    ):
+
+        st.warning(
+            "You have reached the temporary request limit. "
+            "Please wait a moment and try again."
+        )
+
+        return
+
+    # ========================================================
+    # ADD USER MESSAGE
+    # ========================================================
+
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": prompt
+        }
+    )
+
+    # ========================================================
+    # INTENT DETECTION
+    # ========================================================
+
+    try:
+
+        intent = health_agent.detect_intent(
+            prompt
+        )
+
+    except Exception:
+
+        intent = "general_health"
+
+    # ========================================================
+    # AGENT ROUTING
+    # ========================================================
+
+    active_agent = get_agent_label(
+        intent
+    )
+
+    # ========================================================
+    # LOCAL HEALTH TOOL
+    # ========================================================
+
+    tool_topic = None
+    tool_result = None
+
+    if intent != "emergency":
+
+        tool_topic = extract_tool_topic(
+            prompt
+        )
+
+        if tool_topic:
+
+            tool_result = run_local_health_tool(
+                topic=tool_topic,
+                age_group=st.session_state.age_group
+            )
+
+    st.session_state.last_tool_result = (
+        tool_result
+    )
+
+    # ========================================================
+    # PLAN STEP
+    # ========================================================
+
+    st.session_state.plan_step += 1
+
+    current_plan_step = (
+        st.session_state.plan_step
+    )
+
+    # ========================================================
+    # PROCESSING TURN STATE
+    # ========================================================
+
+    st.session_state.turn_state = {
+
+        "status":
+            "processing",
+
+        "plan_step":
+            current_plan_step,
+
+        "query_count":
+            st.session_state.query_count + 1,
+
+        "intent":
+            intent,
+
+        "active_agent":
+            active_agent,
+
+        "tool_used":
+            bool(tool_result),
+
+        "tool_topic":
+            tool_topic,
+
+        "started_at":
+            datetime.now().isoformat()
+    }
+
+    # ========================================================
+    # STRUCTURED SCRATCHPAD
+    # ========================================================
+
+    st.session_state.scratchpad = {
+
+        "last_query":
+            prompt,
+
+        "intent":
+            intent,
+
+        "active_agent":
+            active_agent,
+
+        "tool_used":
+            bool(tool_result),
+
+        "tool_topic":
+            tool_topic,
+
+        "plan_step":
+            current_plan_step,
+
+        "status":
+            "processing"
+    }
+
+    # ========================================================
+    # MEMORY SUMMARY
+    # ========================================================
+
+    current_summary = (
+        st.session_state.get(
+            "summary",
+            ""
+        )
+    )
+
+    if len(st.session_state.messages) > SUMMARY_TRIGGER:
+
+        current_summary = build_memory_summary()
+
+        st.session_state.summary = (
+            current_summary
+        )
+
+    # ========================================================
+    # SHORT-TERM CONTEXT
+    # ========================================================
+
+    conversation_history = (
+        get_conversation_history()
+    )
+
+    # ========================================================
+    # PREPARE AI QUESTION
+    # ========================================================
+
+    ai_prompt = prepare_health_question(
+        prompt,
+        conversation_history
+    )
+
+    # ========================================================
+    # EMERGENCY SAFETY
+    # ========================================================
+
+    if intent == "emergency":
+
+        ai_prompt = build_emergency_prompt(
+            ai_prompt
+        )
+
+    # ========================================================
+    # AI PROCESSING
+    # ========================================================
+
+    response = ""
+
+    with st.spinner("🧠 Thinking..."):
+
+        try:
+
+            # ------------------------------------------------
+            # PRIMARY ARCHITECTURE
+            # ------------------------------------------------
+
+            if run_gemini_with_retry is not None:
+
+                result = run_gemini_with_retry(
+
+                    user_input=ai_prompt,
+
+                    age_group=
+                        st.session_state.age_group,
+
+                    language=
+                        st.session_state.language,
+
+                    conversation_history=
+                        conversation_history,
+
+                    summary=
+                        current_summary,
+
+                    tool_result=
+                        tool_result
+                )
+
+            else:
+
+                # Compatibility fallback.
+
+                result = health_agent.run(
+
+                    user_input=ai_prompt,
+
+                    age_group=
+                        st.session_state.age_group,
+
+                    language=
+                        st.session_state.language,
+
+                    conversation_history=
+                        conversation_history
+                )
+
+            # ------------------------------------------------
+            # SUPPORT STRING OR DICT RESPONSE
+            # ------------------------------------------------
+
+            if isinstance(result, dict):
+
+                response = result.get(
+                    "response",
+                    ""
+                )
+
+                returned_intent = result.get(
+                    "intent"
+                )
+
+                returned_agent = result.get(
+                    "active_agent"
+                )
+
+                if returned_intent:
+
+                    intent = returned_intent
+
+                if returned_agent:
+
+                    active_agent = returned_agent
+
+            else:
+
+                response = result
+
+            # ------------------------------------------------
+            # CLEAN RESPONSE
+            # ------------------------------------------------
+
+            response = clean_ai_response(
+                response
+            )
+
+            if not response:
+
+                response = (
+                    "I could not generate a response "
+                    "right now. Please try again."
+                )
+
+        except Exception as e:
+
+            print(
+                f"❌ AI processing error: {e}"
+            )
+
+            response = (
+                "Sorry, I couldn't process your request "
+                "right now. Please try again later."
+            )
+
+            # ------------------------------------------------
+            # SAVE ERROR STATE
+            # ------------------------------------------------
+
+            st.session_state.turn_state = {
+
+                "status":
+                    "error",
+
+                "plan_step":
+                    current_plan_step,
+
+                "query_count":
+                    st.session_state.query_count,
+
+                "intent":
+                    intent,
+
+                "active_agent":
+                    active_agent,
+
+                "tool_used":
+                    bool(tool_result),
+
+                "tool_topic":
+                    tool_topic,
+
+                "error":
+                    True,
+
+                "completed_at":
+                    datetime.now().isoformat()
+            }
+
+            st.session_state.scratchpad = {
+
+                "last_query":
+                    prompt,
+
+                "intent":
+                    intent,
+
+                "active_agent":
+                    active_agent,
+
+                "tool_used":
+                    bool(tool_result),
+
+                "tool_topic":
+                    tool_topic,
+
+                "status":
+                    "error",
+
+                "plan_step":
+                    current_plan_step
+            }
+
+            save_current_session()
+
+    # ========================================================
+    # ADD ASSISTANT RESPONSE
+    # ========================================================
+
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": response
+        }
+    )
+
+    # ========================================================
+    # UPDATE QUERY COUNT
+    # ========================================================
+
+    st.session_state.query_count += 1
+
+    # ========================================================
+    # UPDATE MEMORY SUMMARY
+    # ========================================================
+
+    if len(st.session_state.messages) > SUMMARY_TRIGGER:
+
+        st.session_state.summary = (
+            build_memory_summary()
+        )
+
+    # ========================================================
+    # COMPLETED TURN STATE
+    # ========================================================
+
+    st.session_state.turn_state = {
+
+        "status":
+            "completed",
+
+        "plan_step":
+            current_plan_step,
+
+        "query_count":
+            st.session_state.query_count,
+
+        "intent":
+            intent,
+
+        "active_agent":
+            active_agent,
+
+        "tool_used":
+            bool(tool_result),
+
+        "tool_topic":
+            tool_topic,
+
+        "response_available":
+            bool(response),
+
+        "completed_at":
+            datetime.now().isoformat()
+    }
+
+    # ========================================================
+    # COMPLETED SCRATCHPAD
+    # ========================================================
+
+    st.session_state.scratchpad = {
+
+        "last_query":
+            prompt,
+
+        "intent":
+            intent,
+
+        "active_agent":
+            active_agent,
+
+        "tool_used":
+            bool(tool_result),
+
+        "tool_topic":
+            tool_topic,
+
+        "last_response_available":
+            bool(response),
+
+        "plan_step":
+            current_plan_step,
+
+        "status":
+            "completed"
+    }
+
+    # ========================================================
+    # DATABASE LOGGING
+    # ========================================================
+
+    try:
+
+        db.add_conversation(
+
+            st.session_state.user_id,
+
+            st.session_state.messages,
+
+            st.session_state.age_group,
+
+            st.session_state.language,
+
+            1
+        )
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Database logging failed: {e}"
+        )
+
+    # ========================================================
+    # SAVE PERSISTENT SESSION
+    # ========================================================
+
+    save_current_session()
 
 
 # ============================================================
 # DARK THEME
 # ============================================================
+
 if st.session_state.theme == "Dark":
 
     st.markdown(
@@ -344,6 +1569,7 @@ if st.session_state.theme == "Dark":
 # ============================================================
 # LIGHT THEME
 # ============================================================
+
 else:
 
     st.markdown(
@@ -394,12 +1620,6 @@ else:
             background-color: white;
             border: 1px solid #e2e8f0;
             margin-bottom: 15px;
-        }
-
-        .chat-user,
-        .chat-assistant {
-            background-color: white;
-            color: #0f172a;
         }
 
         [data-testid="stChatMessage"] {
@@ -463,6 +1683,7 @@ else:
 # ============================================================
 # HEADER
 # ============================================================
+
 st.markdown(
     '<div class="main-title">🩺 Health Assistant</div>',
     unsafe_allow_html=True
@@ -479,10 +1700,18 @@ st.markdown(
 # ============================================================
 # SIDEBAR
 # ============================================================
+
 with st.sidebar:
 
-    st.markdown("## 🩺 Health Assistant")
+    st.markdown(
+        "## 🩺 Health Assistant"
+    )
+
     st.markdown("---")
+
+    # ========================================================
+    # NAVIGATION
+    # ========================================================
 
     page = st.radio(
         "Navigation",
@@ -497,18 +1726,33 @@ with st.sidebar:
             "Health Tips",
             "Analytics",
             "Contact"
-        ].index(st.session_state.current_page)
+        ].index(
+            st.session_state.current_page
+        )
     )
 
     st.session_state.current_page = page
 
     st.markdown("---")
-    st.markdown("### ⚙️ Settings")
+
+    # ========================================================
+    # SETTINGS
+    # ========================================================
+
+    st.markdown(
+        "### ⚙️ Settings"
+    )
 
     st.session_state.theme = st.selectbox(
         "Theme",
-        ["Dark", "Light"],
-        index=["Dark", "Light"].index(
+        [
+            "Dark",
+            "Light"
+        ],
+        index=[
+            "Dark",
+            "Light"
+        ].index(
             st.session_state.theme
         )
     )
@@ -549,10 +1793,20 @@ with st.sidebar:
         )
     )
 
+    save_current_session()
+
     st.markdown("---")
-    st.markdown("### 🏥 Health Categories")
+
+    # ========================================================
+    # HEALTH CATEGORIES
+    # ========================================================
+
+    st.markdown(
+        "### 🏥 Health Categories"
+    )
 
     disease_categories = {
+
         "🤒 Common Symptoms": [
             "Headache",
             "Fever",
@@ -560,16 +1814,19 @@ with st.sidebar:
             "Cold",
             "Fatigue"
         ],
+
         "🫀 Chronic Conditions": [
             "Diabetes",
             "High Blood Pressure",
             "Heart Health"
         ],
+
         "🧠 Mental Wellness": [
             "Stress",
             "Anxiety",
             "Sleep"
         ],
+
         "🥗 Healthy Lifestyle": [
             "Nutrition",
             "Exercise",
@@ -579,24 +1836,44 @@ with st.sidebar:
 
     selected_category = st.selectbox(
         "Select Category",
-        list(disease_categories.keys())
+        list(
+            disease_categories.keys()
+        )
     )
 
     selected_topic = st.selectbox(
         "Select Topic",
-        disease_categories[selected_category]
+        disease_categories[
+            selected_category
+        ]
     )
 
     if st.button(
         "Learn About Topic",
         use_container_width=True
     ):
-        st.session_state.quick_topic = selected_topic
+
+        st.session_state.quick_topic = (
+            selected_topic
+        )
+
         st.session_state.process_quick_topic = True
+
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🛠️ Actions")
+
+    # ========================================================
+    # ACTIONS
+    # ========================================================
+
+    st.markdown(
+        "### 🛠️ Actions"
+    )
+
+    # ========================================================
+    # CLEAR OLD CHATS
+    # ========================================================
 
     if st.button(
         "🗑️ Clear Old Chats",
@@ -604,29 +1881,71 @@ with st.sidebar:
     ):
 
         st.session_state.messages = [
-            st.session_state.messages[0]
+            DEFAULT_GREETING.copy()
         ]
 
-        st.success("Conversation history cleared.")
+        st.session_state.summary = ""
+        st.session_state.scratchpad = {}
+        st.session_state.last_tool_result = None
+        st.session_state.plan_step = 0
+        st.session_state.turn_state = {}
+        st.session_state.query_count = 0
+        st.session_state.quick_topic = None
+        st.session_state.process_quick_topic = False
+
+        save_current_session()
+
+        st.success(
+            "Conversation history cleared."
+        )
+
         st.rerun()
+
+    # ========================================================
+    # RESET EVERYTHING
+    # ========================================================
 
     if st.button(
         "🔄 Reset Everything",
         use_container_width=True
     ):
 
-        for key in list(st.session_state.keys()):
+        try:
+
+            session_manager.delete_session(
+                st.session_state.session_id
+            )
+
+        except Exception:
+            pass
+
+        for key in list(
+            st.session_state.keys()
+        ):
             del st.session_state[key]
 
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 📄 Export")
+
+    # ========================================================
+    # PDF EXPORT
+    # ========================================================
+
+    st.markdown(
+        "### 📄 Export"
+    )
 
     if st.button(
         "Export Conversation",
         use_container_width=True
     ):
+
+        pdf_file = None
+
+        # ----------------------------------------------------
+        # Method 1: create_pdf(messages)
+        # ----------------------------------------------------
 
         if create_pdf is not None:
 
@@ -636,20 +1955,70 @@ with st.sidebar:
                     st.session_state.messages
                 )
 
-                if pdf_file:
+            except Exception as e:
 
-                    with open(
-                        pdf_file,
-                        "rb"
-                    ) as file:
+                st.error(
+                    f"PDF export failed: {str(e)}"
+                )
 
-                        st.download_button(
-                            label="⬇️ Download PDF",
-                            data=file,
-                            file_name="health_conversation.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
+        # ----------------------------------------------------
+        # Method 2: generate_health_report(...)
+        # ----------------------------------------------------
+
+        elif generate_health_report is not None:
+
+            try:
+
+                last_user = ""
+                last_assistant = ""
+
+                for message in reversed(
+                    st.session_state.messages
+                ):
+
+                    if (
+                        not last_assistant
+                        and message.get("role")
+                        == "assistant"
+                    ):
+
+                        last_assistant = message.get(
+                            "content",
+                            ""
                         )
+
+                    elif (
+                        not last_user
+                        and message.get("role")
+                        == "user"
+                    ):
+
+                        last_user = message.get(
+                            "content",
+                            ""
+                        )
+
+                    if (
+                        last_user
+                        and last_assistant
+                    ):
+                        break
+
+                if not last_user or not last_assistant:
+
+                    st.warning(
+                        "There is no completed conversation "
+                        "available to export yet."
+                    )
+
+                else:
+
+                    pdf_file = generate_health_report(
+                        last_user,
+                        last_assistant,
+                        st.session_state.age_group,
+                        st.session_state.language
+                    )
 
             except Exception as e:
 
@@ -657,7 +2026,37 @@ with st.sidebar:
                     f"PDF export failed: {str(e)}"
                 )
 
-        else:
+        # ----------------------------------------------------
+        # Download
+        # ----------------------------------------------------
+
+        if pdf_file:
+
+            try:
+
+                with open(
+                    pdf_file,
+                    "rb"
+                ) as file:
+
+                    st.download_button(
+                        label="⬇️ Download PDF",
+                        data=file,
+                        file_name="health_conversation.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+
+            except Exception as e:
+
+                st.error(
+                    f"Unable to read PDF file: {str(e)}"
+                )
+
+        elif (
+            create_pdf is None
+            and generate_health_report is None
+        ):
 
             st.warning(
                 "PDF export module is not available."
@@ -665,19 +2064,59 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.caption(
-        f"Session ID: {st.session_state.user_id}"
+    # ========================================================
+    # SESSION INFORMATION
+    # ========================================================
+
+    st.markdown(
+        "### 💾 Session"
     )
 
     st.caption(
-        f"Questions: {st.session_state.query_count}"
+        f"Session ID: "
+        f"{st.session_state.session_id}"
     )
+
+    st.caption(
+        f"Questions: "
+        f"{st.session_state.query_count}"
+    )
+
+    st.caption(
+        f"Context window: "
+        f"{MAX_CONTEXT_MESSAGES} messages"
+    )
+
+    st.caption(
+        f"Memory summary: "
+        f"{'Available' if st.session_state.get('summary') else 'Not needed yet'}"
+    )
+
+    if st.session_state.get(
+        "turn_state"
+    ):
+
+        current_agent = (
+            st.session_state.turn_state.get(
+                "active_agent"
+            )
+        )
+
+        if current_agent:
+
+            st.caption(
+                f"Active route: {current_agent}"
+            )
 
 
 # ============================================================
 # HEALTH TIPS PAGE
 # ============================================================
-if st.session_state.current_page == "Health Tips":
+
+if (
+    st.session_state.current_page
+    == "Health Tips"
+):
 
     st.markdown(
         '<div class="section-title">'
@@ -687,26 +2126,32 @@ if st.session_state.current_page == "Health Tips":
     )
 
     tips = [
+
         (
             "💧 Stay Hydrated",
             "Drink enough water throughout the day."
         ),
+
         (
             "🥗 Eat Balanced Meals",
             "Include vegetables, fruits, proteins, and whole grains."
         ),
+
         (
             "🏃 Stay Active",
             "Regular physical activity supports overall health."
         ),
+
         (
             "😴 Sleep Well",
             "Maintain a consistent and healthy sleep schedule."
         ),
+
         (
             "🧘 Manage Stress",
             "Use healthy relaxation techniques and take regular breaks."
         ),
+
         (
             "🧼 Maintain Hygiene",
             "Wash your hands regularly and maintain personal hygiene."
@@ -739,7 +2184,11 @@ if st.session_state.current_page == "Health Tips":
 # ============================================================
 # ANALYTICS PAGE
 # ============================================================
-elif st.session_state.current_page == "Analytics":
+
+elif (
+    st.session_state.current_page
+    == "Analytics"
+):
 
     st.markdown(
         '<div class="section-title">'
@@ -751,6 +2200,7 @@ elif st.session_state.current_page == "Analytics":
     if show_analytics is not None:
 
         try:
+
             show_analytics()
 
         except Exception as e:
@@ -769,7 +2219,11 @@ elif st.session_state.current_page == "Analytics":
 # ============================================================
 # CONTACT PAGE
 # ============================================================
-elif st.session_state.current_page == "Contact":
+
+elif (
+    st.session_state.current_page
+    == "Contact"
+):
 
     st.markdown(
         '<div class="section-title">'
@@ -815,14 +2269,18 @@ elif st.session_state.current_page == "Contact":
 # ============================================================
 # MAIN HEALTH ASSISTANT PAGE
 # ============================================================
+
 else:
 
     # ========================================================
     # QUICK TOPIC PROCESSING
     # ========================================================
+
     if st.session_state.process_quick_topic:
 
-        topic = st.session_state.quick_topic
+        topic = (
+            st.session_state.quick_topic
+        )
 
         prompt = (
             f"Please provide educational information about "
@@ -831,77 +2289,19 @@ else:
             f"should consider speaking with a healthcare professional."
         )
 
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": prompt
-            }
-        )
-
-        conversation_history = get_conversation_history()
-
-        if not check_rate_limit(
-            st.session_state.user_id
-        ):
-
-            response = (
-                "You have reached the temporary request limit. "
-                "Please wait a moment and try again."
-            )
-
-        else:
-
-            with st.spinner("🧠 Thinking..."):
-
-                try:
-
-                    response = health_agent.run(
-                        user_input=prompt,
-                        age_group=st.session_state.age_group,
-                        language=st.session_state.language,
-                        conversation_history=conversation_history
-                    )
-
-                    response = clean_ai_response(response)
-
-                except Exception as e:
-
-                    response = (
-                        "Sorry, I couldn't process your request right now. "
-                        f"Please try again later.\n\nError: {str(e)}"
-                    )
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": response
-            }
-        )
-
-        st.session_state.query_count += 1
-
-        try:
-
-            db.add_conversation(
-                st.session_state.user_id,
-                st.session_state.messages,
-                st.session_state.age_group,
-                st.session_state.language,
-                st.session_state.query_count
-            )
-
-        except Exception:
-            pass
-
         st.session_state.process_quick_topic = False
         st.session_state.quick_topic = None
 
-        st.rerun()
+        process_user_message(
+            prompt
+        )
 
+        st.rerun()
 
     # ========================================================
     # INFORMATION CARDS
     # ========================================================
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -958,10 +2358,10 @@ else:
             unsafe_allow_html=True
         )
 
-
     # ========================================================
     # CONVERSATION
     # ========================================================
+
     st.markdown(
         '<div class="section-title">'
         '💬 Conversation'
@@ -969,10 +2369,10 @@ else:
         unsafe_allow_html=True
     )
 
-
     # ========================================================
     # DISPLAY CHAT HISTORY
     # ========================================================
+
     for message in st.session_state.messages:
 
         if message["role"] == "user":
@@ -990,19 +2390,23 @@ else:
                 avatar="🩺"
             ):
 
-                cleaned_content = clean_ai_response(
-                    message["content"]
+                cleaned_content = (
+                    clean_ai_response(
+                        message["content"]
+                    )
                 )
 
                 st.markdown(
                     cleaned_content
                 )
 
-
     # ========================================================
     # VOICE INPUT
     # ========================================================
-    st.markdown("### 🎤 Voice Input")
+
+    st.markdown(
+        "### 🎤 Voice Input"
+    )
 
     if get_voice_input is not None:
 
@@ -1017,7 +2421,10 @@ else:
 
                 if voice_text:
 
-                    st.session_state.voice_text = voice_text
+                    st.session_state.voice_text = (
+                        voice_text
+                    )
+
                     st.rerun()
 
             except Exception as e:
@@ -1032,158 +2439,44 @@ else:
             "Voice input module is not available."
         )
 
-
     # ========================================================
     # VOICE MESSAGE PROCESSING
     # ========================================================
+
     if st.session_state.voice_text:
 
-        prompt = st.session_state.voice_text
+        prompt = (
+            st.session_state.voice_text
+        )
 
         st.session_state.voice_text = ""
 
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": prompt
-            }
+        process_user_message(
+            prompt
         )
-
-        conversation_history = get_conversation_history()
-
-        if not check_rate_limit(
-            st.session_state.user_id
-        ):
-
-            response = (
-                "You have reached the temporary request limit. "
-                "Please wait a moment and try again."
-            )
-
-        else:
-
-            with st.spinner("🧠 Thinking..."):
-
-                try:
-
-                    response = health_agent.run(
-                        user_input=prompt,
-                        age_group=st.session_state.age_group,
-                        language=st.session_state.language,
-                        conversation_history=conversation_history
-                    )
-
-                    response = clean_ai_response(response)
-
-                except Exception as e:
-
-                    response = (
-                        "Sorry, I couldn't process your request right now. "
-                        f"Please try again later.\n\nError: {str(e)}"
-                    )
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": response
-            }
-        )
-
-        st.session_state.query_count += 1
-
-        try:
-
-            db.add_conversation(
-                st.session_state.user_id,
-                st.session_state.messages,
-                st.session_state.age_group,
-                st.session_state.language,
-                st.session_state.query_count
-            )
-
-        except Exception:
-            pass
 
         st.rerun()
-
 
     # ========================================================
     # TEXT CHAT
     # ========================================================
+
     prompt = st.chat_input(
         "Ask a health education question..."
     )
 
     if prompt:
 
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": prompt
-            }
+        process_user_message(
+            prompt
         )
-
-        conversation_history = get_conversation_history()
-
-        if not check_rate_limit(
-            st.session_state.user_id
-        ):
-
-            response = (
-                "You have reached the temporary request limit. "
-                "Please wait a moment and try again."
-            )
-
-        else:
-
-            with st.spinner("🧠 Thinking..."):
-
-                try:
-
-                    response = health_agent.run(
-                        user_input=prompt,
-                        age_group=st.session_state.age_group,
-                        language=st.session_state.language,
-                        conversation_history=conversation_history
-                    )
-
-                    response = clean_ai_response(response)
-
-                except Exception as e:
-
-                    response = (
-                        "Sorry, I couldn't process your request right now. "
-                        f"Please try again later.\n\nError: {str(e)}"
-                    )
-
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": response
-            }
-        )
-
-        st.session_state.query_count += 1
-
-        try:
-
-            db.add_conversation(
-                st.session_state.user_id,
-                st.session_state.messages,
-                st.session_state.age_group,
-                st.session_state.language,
-                st.session_state.query_count
-            )
-
-        except Exception:
-            pass
 
         st.rerun()
-
 
     # ========================================================
     # DISCLAIMER
     # ========================================================
+
     st.markdown(
         """
         <div class="disclaimer">
@@ -1208,6 +2501,7 @@ else:
 # ============================================================
 # FOOTER
 # ============================================================
+
 st.markdown(
     """
     <br>
@@ -1219,7 +2513,9 @@ st.markdown(
 
     <br><br>
 
-    Built for educational purposes • Not a medical diagnostic system
+    Built for educational purposes •
+
+    Not a medical diagnostic system
 
     </div>
     """,

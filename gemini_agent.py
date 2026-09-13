@@ -1,3 +1,23 @@
+"""
+Gemini + Groq AI Layer
+======================
+
+Primary:
+    Google Gemini
+
+Fallback:
+    Groq
+
+Responsibilities:
+    - Health-safety system instructions
+    - Conversation context
+    - Memory summary
+    - Local tool context
+    - Response caching
+    - Gemini retry handling
+    - Automatic Groq fallback
+    - Health-topic filtering
+"""
 
 import os
 import hashlib
@@ -6,99 +26,131 @@ import time
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
+
 from google import genai
 from google.genai import types
+
 from groq import Groq
 
 
-# ============================================
-# LOAD ENVIRONMENT VARIABLES
-# ============================================
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 load_dotenv()
+
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
-# ============================================
-# CHECK API KEYS
-# ============================================
-
 if not GEMINI_API_KEY:
-    print("⚠️ GEMINI_API_KEY not found in .env file")
-    raise RuntimeError("GEMINI_API_KEY is missing from .env")
-
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing from the .env file."
+    )
 
 if not GROQ_API_KEY:
-    print("⚠️ GROQ_API_KEY not found in .env file")
-    raise RuntimeError("GROQ_API_KEY is missing from .env")
+    raise RuntimeError(
+        "GROQ_API_KEY is missing from the .env file."
+    )
 
 
-# ============================================
-# GEMINI CLIENT
-# ============================================
+# ============================================================
+# CLIENTS
+# ============================================================
 
 try:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    client = genai.Client(
+        api_key=GEMINI_API_KEY
+    )
+
     print("✅ Gemini client initialized")
 
 except Exception as e:
-    print(f"❌ Failed to initialize Gemini client: {e}")
-    raise
 
+    client = None
 
-# ============================================
-# GROQ CLIENT
-# ============================================
+    print(
+        f"⚠️ Gemini client initialization failed: {e}"
+    )
+
 
 try:
-    groq_client = Groq(api_key=GROQ_API_KEY)
+
+    groq_client = Groq(
+        api_key=GROQ_API_KEY
+    )
+
     print("✅ Groq fallback client initialized")
 
 except Exception as e:
-    print(f"❌ Failed to initialize Groq client: {e}")
-    raise
+
+    groq_client = None
+
+    print(
+        f"⚠️ Groq client initialization failed: {e}"
+    )
 
 
-# ============================================
+# ============================================================
 # MODELS
-# ============================================
+# ============================================================
 
 GEMINI_MODEL_NAME = "gemini-3.8-flash"
+
 GROQ_MODEL_NAME = "openai/gpt-oss-120b"
 
-print(f"✅ Using Gemini model: {GEMINI_MODEL_NAME}")
-print(f"✅ Using Groq fallback model: {GROQ_MODEL_NAME}")
+
+print(
+    f"✅ Using Gemini model: {GEMINI_MODEL_NAME}"
+)
+
+print(
+    f"✅ Using Groq fallback model: {GROQ_MODEL_NAME}"
+)
 
 
-# ============================================
-# CACHE SETTINGS
-# ============================================
+# ============================================================
+# RESPONSE CACHE
+# ============================================================
 
 CACHE_FILE = "response_cache.json"
+
 CACHE_DURATION_HOURS = 24
 
 
 def load_cache():
-    """Load saved responses from cache."""
 
     if not os.path.exists(CACHE_FILE):
+
         return {}
 
     try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            CACHE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             return json.load(file)
 
     except Exception:
+
         return {}
 
 
 def save_cache(cache):
-    """Save responses to cache."""
 
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as file:
+
+        with open(
+            CACHE_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
             json.dump(
                 cache,
                 file,
@@ -107,646 +159,490 @@ def save_cache(cache):
             )
 
     except Exception as e:
-        print(f"⚠️ Could not save cache: {e}")
+
+        print(
+            f"⚠️ Cache save failed: {e}"
+        )
 
 
-def create_cache_key(
+def make_cache_key(
     user_input,
     age_group,
     language,
-    conversation_history
+    conversation_history,
+    summary="",
+    tool_result=None
 ):
-    """Create a unique cache key."""
 
-    cache_data = {
+    data = {
         "user_input": user_input,
         "age_group": age_group,
         "language": language,
-        "conversation_history": conversation_history
+        "conversation_history": conversation_history,
+        "summary": summary,
+        "tool_result": tool_result
     }
 
-    cache_string = json.dumps(
-        cache_data,
+    raw = json.dumps(
+        data,
         sort_keys=True,
         ensure_ascii=False
     )
 
     return hashlib.md5(
-        cache_string.encode("utf-8")
+        raw.encode("utf-8")
     ).hexdigest()
 
 
 def get_cached_response(cache_key):
-    """Return cached response if still valid."""
 
     cache = load_cache()
 
-    if cache_key not in cache:
-        return None
+    item = cache.get(cache_key)
 
-    cached_item = cache[cache_key]
+    if not item:
+        return None
 
     try:
-        cached_time = datetime.fromisoformat(
-            cached_item["timestamp"]
+
+        created_at = datetime.fromisoformat(
+            item["created_at"]
         )
 
-        expiry_time = cached_time + timedelta(
-            hours=CACHE_DURATION_HOURS
-        )
+        if (
+            datetime.now() - created_at
+            > timedelta(hours=CACHE_DURATION_HOURS)
+        ):
 
-        if datetime.now() < expiry_time:
+            return None
 
-            print("⚡ Using cached response")
-
-            return cached_item["response"]
-
-        else:
-            del cache[cache_key]
-            save_cache(cache)
+        return item["response"]
 
     except Exception:
+
         return None
 
-    return None
 
-
-def cache_response(cache_key, response):
-    """Store a response in cache."""
+def cache_response(
+    cache_key,
+    response
+):
 
     cache = load_cache()
 
     cache[cache_key] = {
-        "timestamp": datetime.now().isoformat(),
+        "created_at": datetime.now().isoformat(),
         "response": response
     }
 
     save_cache(cache)
 
 
-# ============================================
-# HEALTH KEYWORDS
-# ============================================
+# ============================================================
+# HEALTH QUERY FILTER
+# ============================================================
 
 HEALTH_KEYWORDS = [
-
-    # General health
     "health",
-    "healthy",
     "symptom",
     "symptoms",
-    "disease",
-    "illness",
-    "condition",
-    "medical",
-    "medicine",
-    "doctor",
-    "hospital",
-    "clinic",
-    "patient",
-
-    # Common symptoms
-    "pain",
     "headache",
     "fever",
     "cough",
     "cold",
     "flu",
-    "sneeze",
-    "sneezing",
-    "fatigue",
-    "tired",
-    "weakness",
+    "pain",
     "dizziness",
     "nausea",
     "vomiting",
     "diarrhea",
-    "constipation",
-    "stomach",
-    "abdomen",
-    "chest pain",
-    "breathing",
-    "breath",
-    "shortness of breath",
-    "heart",
-    "heartbeat",
-    "palpitation",
-
-    # Common conditions
+    "fatigue",
+    "weakness",
+    "rash",
+    "swelling",
     "diabetes",
     "blood pressure",
-    "hypertension",
-    "asthma",
-    "migraine",
-    "allergy",
-    "allergic",
-    "infection",
-    "virus",
-    "bacteria",
-    "covid",
-    "pneumonia",
-    "bronchitis",
-    "anxiety",
+    "heart",
     "stress",
-    "depression",
-
-    # Body parts
-    "head",
-    "eye",
-    "ear",
-    "nose",
-    "throat",
-    "neck",
-    "shoulder",
-    "arm",
-    "hand",
-    "leg",
-    "foot",
-    "back",
-    "skin",
-    "tooth",
-    "teeth",
-
-    # Health activities
-    "exercise",
-    "workout",
-    "fitness",
-    "diet",
-    "nutrition",
-    "food",
-    "foods",
-    "eat",
-    "eating",
+    "anxiety",
     "sleep",
-    "weight",
-    "water",
+    "nutrition",
+    "diet",
+    "food",
+    "exercise",
+    "fitness",
     "hydration",
-
-    # Emergency
-    "emergency",
-    "severe",
-    "bleeding",
-    "unconscious",
-    "fainting",
-    "seizure",
-    "stroke",
-    "heart attack",
-
-    # Medicine
-    "tablet",
+    "water",
     "medicine",
     "medication",
-    "dose",
-    "dosage",
-    "prescription",
-    "drug",
-    "antibiotic"
+    "doctor",
+    "hospital",
+    "disease",
+    "illness",
+    "infection",
+    "prevention",
+    "self care",
+    "self-care",
+    "healthy",
+    "wellness",
+    "mental health",
+    "breathing",
+    "chest pain",
+    "emergency"
 ]
 
 
-# ============================================
-# HEALTH QUERY FILTER
-# ============================================
+def is_health_related(user_input):
 
-def is_health_related(query):
-    """Check whether a query is health-related."""
+    text = user_input.lower().strip()
 
-    query_lower = query.lower()
-
-    for keyword in HEALTH_KEYWORDS:
-
-        if keyword in query_lower:
-            return True
-
-    return False
+    return any(
+        keyword in text
+        for keyword in HEALTH_KEYWORDS
+    )
 
 
-# ============================================
-# CONVERSATION HISTORY
-# ============================================
+# ============================================================
+# CONVERSATION FORMATTER
+# ============================================================
 
-def format_conversation_history(conversation_history):
-    """Convert conversation history into readable text."""
+def format_conversation_history(
+    conversation_history
+):
 
     if not conversation_history:
+
         return "No previous conversation."
 
-    formatted_history = []
+    lines = []
 
     for message in conversation_history:
 
-        role = message.get("role", "")
-        content = message.get("content", "")
+        role = message.get(
+            "role",
+            "user"
+        )
+
+        content = message.get(
+            "content",
+            ""
+        )
+
+        if not content:
+            continue
 
         if role == "user":
 
-            formatted_history.append(
-                f"USER: {content}"
-            )
+            label = "USER"
 
         elif role == "assistant":
 
-            formatted_history.append(
-                f"ASSISTANT: {content}"
-            )
+            label = "ASSISTANT"
 
-    return "\n".join(formatted_history)
+        else:
+
+            label = role.upper()
+
+        lines.append(
+            f"{label}: {content}"
+        )
+
+    if not lines:
+
+        return "No previous conversation."
+
+    return "\n".join(lines)
 
 
-# ============================================
-# LANGUAGE INSTRUCTION
-# ============================================
+# ============================================================
+# LANGUAGE INSTRUCTIONS
+# ============================================================
 
 def get_language_instruction(language):
-    """Return instructions for the selected language."""
 
-    if language.lower() == "urdu":
+    language = str(
+        language or "English"
+    ).strip()
 
-        return """
-Respond primarily in simple Urdu.
-You may use common English medical terms
-when they make the explanation clearer.
-"""
+    instructions = {
 
-    elif language.lower() == "hindi":
+        "English":
+            "Respond in clear, simple English.",
 
-        return """
-Respond primarily in simple Hindi.
-You may use common English medical terms
-when they make the explanation clearer.
-"""
+        "Urdu":
+            "Respond in simple Urdu. Use familiar and easy words.",
 
-    elif language.lower() == "arabic":
+        "Hindi":
+            "Respond in simple Hindi. Use familiar and easy words.",
 
-        return """
-Respond primarily in simple Arabic.
-You may use common English medical terms
-when they make the explanation clearer.
-"""
+        "Arabic":
+            "Respond in clear, simple Arabic."
+    }
 
-    else:
-
-        return """
-Respond in clear, simple English.
-"""
+    return instructions.get(
+        language,
+        "Respond in clear, simple English."
+    )
 
 
-# ============================================
-# HEALTH AI SYSTEM INSTRUCTION
-# ============================================
+# ============================================================
+# HEALTH SYSTEM INSTRUCTION
+# ============================================================
 
 def get_health_system_instruction(
     age_group,
     language
 ):
-    """Create shared safety instructions for Gemini and Groq."""
 
-    language_instruction = get_language_instruction(
-        language
+    language_instruction = (
+        get_language_instruction(language)
     )
 
     return f"""
-You are a responsible AI Health Education Assistant.
+You are the AI Health Education Assistant.
 
-Your purpose is to provide SAFE, CLEAR, SHORT,
-and GENERAL health education.
+Your purpose is to provide general health education,
+not medical diagnosis or treatment.
 
 IMPORTANT SAFETY RULES:
 
-1. Never diagnose the user.
-
+1. Never diagnose a person.
 2. Never claim certainty about a medical condition.
-
-3. Never replace a doctor or qualified healthcare professional.
-
-4. Explain possible causes using careful language such as
-   "may", "can", or "could".
-
-5. Give practical and generally safe self-care information.
-
-6. Do not provide prescription medication recommendations.
-
-7. Do not provide medication dosages.
-
-8. If medications are mentioned, keep the information general
-   and advise the user to consult a doctor or pharmacist.
-
-9. Clearly identify emergency warning signs.
-
+3. Never pretend to be a doctor.
+4. Never replace professional medical advice.
+5. Do not prescribe medications.
+6. Do not provide medication dosages.
+7. Do not tell users to start, stop, or change prescription medication.
+8. General information about medications is allowed when educational.
+9. Explain common warning signs when appropriate.
 10. If the user describes potentially life-threatening symptoms,
-    immediately recommend contacting local emergency services
-    or going to the nearest emergency medical facility.
-
+    recommend urgent professional medical attention.
 11. Do not automatically mention "911".
-    Use "local emergency services" unless the user specifies
-    their country.
+    Use general wording such as local emergency services
+    or the nearest emergency medical facility.
+12. Do not unnecessarily frighten the user.
+13. Use simple language.
+14. Consider the selected age group.
+15. Clearly distinguish education from diagnosis.
+16. If information is uncertain, say so.
+17. Do not invent medical facts.
 
-12. Do not create unnecessary fear.
+Selected age group:
+{age_group}
 
-13. Use simple language suitable for beginners.
+Selected language:
+{language}
 
-14. Respect the selected age group:
-    {age_group}
-
-15. Respect the selected language:
-    {language}
-
+Language instruction:
 {language_instruction}
-
-RESPONSE LENGTH:
-
-Keep normal answers concise.
-
-For simple questions, aim for approximately 150–400 words.
-
-For more complex health questions, stay below approximately
-700 words unless additional detail is genuinely necessary.
 
 RESPONSE STYLE:
 
-Use clear Markdown headings and bullet points.
+- Be helpful.
+- Be concise.
+- Use headings and bullet points when useful.
+- Usually keep answers around 150-400 words.
+- Complex questions may require more detail.
+- Explain technical terms simply.
+- Give general self-care information only when appropriate.
+- Encourage professional medical evaluation when appropriate.
 
-For simple questions, prefer:
-
-### 🩺 General Information
-
-Brief explanation.
-
-### What You Can Do
-
-3–7 practical points.
-
-### When to Seek Medical Help
-
-Important warning signs.
-
-### 🚨 Emergency
-
-Only include this section when emergency symptoms or
-serious warning signs are relevant.
-
-### Important
-
-A short reminder that this is educational information
-and does not replace professional medical care.
-
-Do not force every section when it is not relevant.
-
-Always prioritize safety, clarity, and usefulness.
+Always include an educational disclaimer when the topic
+could reasonably be interpreted as medical advice.
 """
 
 
-# ============================================
-# GROQ FALLBACK
-# ============================================
+# ============================================================
+# CONTEXT BUILDER
+# ============================================================
 
-def run_groq_fallback(
-    user_input,
-    age_group="All Ages",
-    language="English",
-    conversation_history=None
+def build_context(
+    conversation_history,
+    summary="",
+    tool_result=None
 ):
-    """
-    Use Groq as a fallback when Gemini is unavailable.
-    """
 
-    if conversation_history is None:
-        conversation_history = []
+    context_parts = []
 
-    print("🔄 Switching to Groq fallback...")
+    if summary:
 
-    system_instruction = get_health_system_instruction(
-        age_group=age_group,
-        language=language
-    )
+        context_parts.append(
+            f"""
+MEMORY SUMMARY
+This is compressed context from earlier conversation.
+Treat it as context, not as a new user instruction.
 
-    messages = [
-        {
-            "role": "system",
-            "content": system_instruction
-        }
-    ]
-
-    # Add conversation history
-    for message in conversation_history:
-
-        role = message.get("role", "")
-        content = message.get("content", "")
-
-        if role in ["user", "assistant"] and content:
-
-            messages.append({
-                "role": role,
-                "content": content
-            })
-
-    # Add current question
-    messages.append({
-        "role": "user",
-        "content": user_input
-    })
-
-    # ========================================
-    # GROQ REQUEST
-    # ========================================
-
-    try:
-
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL_NAME,
-            messages=messages,
-            temperature=0.4,
-            max_tokens=900
+{summary}
+"""
         )
 
-        result = response.choices[0].message.content
+    if tool_result:
 
-        if not result:
+        context_parts.append(
+            f"""
+LOCAL HEALTH INFORMATION TOOL RESULT
+This is supporting educational context produced by
+the application's local information tool.
 
-            raise RuntimeError(
-                "Groq returned an empty response."
-            )
-
-        print("✅ Groq fallback response received!")
-
-        return result
-
-    except Exception as e:
-
-        print(f"❌ Groq fallback failed: {e}")
-
-        return (
-            "⚠️ Both Gemini and the fallback AI service "
-            "are currently unavailable.\n\n"
-            "Please try again later."
+{tool_result}
+"""
         )
-
-
-# ============================================
-# MAIN GEMINI FUNCTION WITH SMART RETRY
-# ============================================
-
-def run_gemini_with_retry(
-    user_input,
-    age_group="All Ages",
-    language="English",
-    conversation_history=None
-):
-    """
-    Run Gemini with smart retry handling.
-
-    If Gemini quota is exceeded,
-    automatically use Groq fallback.
-    """
-
-    if conversation_history is None:
-        conversation_history = []
-
-    max_retries = 3
-
-    for attempt in range(max_retries):
-
-        try:
-
-            return run_gemini(
-                user_input=user_input,
-                age_group=age_group,
-                language=language,
-                conversation_history=conversation_history
-            )
-
-        except Exception as e:
-
-            error_text = str(e)
-
-            print(
-                f"⚠️ Gemini request failed "
-                f"(attempt {attempt + 1}/{max_retries}): {e}"
-            )
-
-            # ========================================
-            # QUOTA ERROR → GROQ FALLBACK
-            # ========================================
-
-            if (
-                "429" in error_text
-                or "RESOURCE_EXHAUSTED" in error_text
-                or "quota" in error_text.lower()
-                or "quota exceeded" in error_text.lower()
-            ):
-
-                print("🚫 Gemini API quota exceeded.")
-                print("⏸️ Stopping Gemini retries.")
-                print("🔄 Activating Groq fallback...")
-
-                return run_groq_fallback(
-                    user_input=user_input,
-                    age_group=age_group,
-                    language=language,
-                    conversation_history=conversation_history
-                )
-
-            # ========================================
-            # TEMPORARY SERVER ERROR
-            # ========================================
-
-            if "503" in error_text or "UNAVAILABLE" in error_text:
-
-                if attempt < max_retries - 1:
-
-                    wait_time = 2 ** attempt
-
-                    print(
-                        "⏳ Temporary Gemini server issue."
-                    )
-
-                    print(
-                        f"⏳ Retrying in {wait_time} seconds..."
-                    )
-
-                    time.sleep(wait_time)
-
-                    continue
-
-                print(
-                    "⚠️ Gemini remained unavailable."
-                )
-
-                print(
-                    "🔄 Activating Groq fallback..."
-                )
-
-                return run_groq_fallback(
-                    user_input=user_input,
-                    age_group=age_group,
-                    language=language,
-                    conversation_history=conversation_history
-                )
-
-            # ========================================
-            # OTHER ERRORS
-            # ========================================
-
-            if attempt < max_retries - 1:
-
-                wait_time = 2 ** attempt
-
-                print(
-                    f"⏳ Retrying in {wait_time} seconds..."
-                )
-
-                time.sleep(wait_time)
-
-            else:
-
-                print(
-                    "⚠️ Gemini failed after all retries."
-                )
-
-                print(
-                    "🔄 Activating Groq fallback..."
-                )
-
-                return run_groq_fallback(
-                    user_input=user_input,
-                    age_group=age_group,
-                    language=language,
-                    conversation_history=conversation_history
-                )
-
-
-# ============================================
-# GEMINI REQUEST
-# ============================================
-
-def run_gemini(
-    user_input,
-    age_group="All Ages",
-    language="English",
-    conversation_history=None
-):
-    """Send the health question to Gemini."""
-
-    if conversation_history is None:
-        conversation_history = []
-
-    # ========================================
-    # FORMAT HISTORY
-    # ========================================
 
     history_text = format_conversation_history(
         conversation_history
     )
 
-    # ========================================
-    # CACHE
-    # ========================================
+    context_parts.append(
+        f"""
+RECENT CONVERSATION
 
-    cache_key = create_cache_key(
+{history_text}
+"""
+    )
+
+    return "\n".join(
+        context_parts
+    )
+
+
+# ============================================================
+# GROQ FALLBACK
+# ============================================================
+
+def run_groq_fallback(
+    user_input,
+    age_group="All Ages",
+    language="English",
+    conversation_history=None,
+    summary="",
+    tool_result=None
+):
+
+    print(
+        "🔄 Switching to Groq fallback..."
+    )
+
+    if groq_client is None:
+
+        return (
+            "I'm temporarily unable to generate a response. "
+            "Please try again later."
+        )
+
+    if conversation_history is None:
+
+        conversation_history = []
+
+    system_instruction = get_health_system_instruction(
+        age_group,
+        language
+    )
+
+    context = build_context(
+        conversation_history,
+        summary,
+        tool_result
+    )
+
+    prompt = f"""
+{context}
+
+CURRENT USER QUESTION
+
+{user_input}
+
+Provide a safe, educational response.
+"""
+
+    try:
+
+        completion = groq_client.chat.completions.create(
+
+            model=GROQ_MODEL_NAME,
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_instruction
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.4,
+
+            max_tokens=900
+        )
+
+        response = (
+            completion
+            .choices[0]
+            .message
+            .content
+        )
+
+        if response:
+
+            print(
+                "✅ Groq fallback response received!"
+            )
+
+            return response.strip()
+
+    except Exception as e:
+
+        print(
+            f"❌ Groq fallback failed: {e}"
+        )
+
+    return (
+        "I'm temporarily unable to generate a response. "
+        "Please try again later."
+    )
+
+
+# ============================================================
+# GEMINI REQUEST
+# ============================================================
+
+def run_gemini(
+    user_input,
+    age_group="All Ages",
+    language="English",
+    conversation_history=None,
+    summary="",
+    tool_result=None
+):
+
+    if conversation_history is None:
+
+        conversation_history = []
+
+    # --------------------------------------------------------
+    # Health filtering
+    # --------------------------------------------------------
+
+    if not is_health_related(user_input):
+
+        return (
+            "I am designed to provide health education "
+            "and general wellness information. "
+            "Please ask me a health-related question."
+        )
+
+    # --------------------------------------------------------
+    # Cache
+    # --------------------------------------------------------
+
+    cache_key = make_cache_key(
         user_input=user_input,
         age_group=age_group,
         language=language,
-        conversation_history=conversation_history
+        conversation_history=conversation_history,
+        summary=summary,
+        tool_result=tool_result
     )
 
     cached_response = get_cached_response(
@@ -754,126 +650,307 @@ def run_gemini(
     )
 
     if cached_response:
-        return cached_response
 
-    # ========================================
-    # HEALTH FILTER
-    # ========================================
-
-    if not is_health_related(user_input):
-
-        return (
-            "I am a health education assistant. "
-            "Please ask me a health-related question "
-            "about symptoms, diseases, prevention, "
-            "nutrition, fitness, or general health."
+        print(
+            "⚡ Returning cached response."
         )
 
-    # ========================================
-    # SYSTEM INSTRUCTION
-    # ========================================
+        return cached_response
 
-    system_instruction = get_health_system_instruction(
-        age_group=age_group,
-        language=language
+    # --------------------------------------------------------
+    # Client
+    # --------------------------------------------------------
+
+    if client is None:
+
+        raise RuntimeError(
+            "Gemini client is not available."
+        )
+
+    # --------------------------------------------------------
+    # System instruction
+    # --------------------------------------------------------
+
+    system_instruction = (
+        get_health_system_instruction(
+            age_group,
+            language
+        )
     )
 
-    # ========================================
-    # USER PROMPT
-    # ========================================
+    # --------------------------------------------------------
+    # Context
+    # --------------------------------------------------------
+
+    context = build_context(
+        conversation_history,
+        summary,
+        tool_result
+    )
+
+    # --------------------------------------------------------
+    # Prompt
+    # --------------------------------------------------------
 
     prompt = f"""
-Previous conversation:
+{context}
 
-{history_text}
-
-Current user question:
+CURRENT USER QUESTION
 
 {user_input}
 
-Answer the user's health question using the safety rules
-provided in the system instructions.
-
-Keep the response concise and beginner-friendly.
-
-For a simple question:
-- Give the most useful information first.
-- Avoid unnecessary background information.
-- Use short paragraphs and bullet points.
-
-For symptom questions:
-- Explain common possibilities without diagnosing.
-- Give safe general self-care information.
-- Mention important warning signs.
-- Clearly identify emergency situations.
-
-Do not provide prescription treatment or medication dosages.
-
-Do not force unnecessary sections.
-
-End with a short educational disclaimer.
+Now provide the safest and most useful
+educational health response.
 """
 
-    # ========================================
-    # GEMINI API REQUEST
-    # ========================================
+    print(
+        "Sending request to Gemini..."
+    )
 
-    print("Sending request to Gemini...")
+    # --------------------------------------------------------
+    # Gemini request
+    # --------------------------------------------------------
 
     response = client.models.generate_content(
+
         model=GEMINI_MODEL_NAME,
+
         contents=prompt,
+
         config=types.GenerateContentConfig(
+
             system_instruction=system_instruction,
+
             temperature=0.4,
+
             max_output_tokens=900
         )
     )
 
-    # ========================================
-    # GET RESPONSE TEXT
-    # ========================================
+    text = getattr(
+        response,
+        "text",
+        None
+    )
 
-    result = response.text
-
-    if not result:
+    if not text:
 
         raise RuntimeError(
             "Gemini returned an empty response."
         )
 
-    # ========================================
-    # CACHE RESPONSE
-    # ========================================
+    text = text.strip()
+
+    # --------------------------------------------------------
+    # Cache successful response
+    # --------------------------------------------------------
 
     cache_response(
-        cache_key=cache_key,
-        response=result
+        cache_key,
+        text
     )
 
-    print("✅ Response received!")
-
-    return result
+    return text
 
 
-# ============================================
-# SIMPLE TEST
-# ============================================
+# ============================================================
+# GEMINI RETRY + FALLBACK
+# ============================================================
+
+def run_gemini_with_retry(
+    user_input,
+    age_group="All Ages",
+    language="English",
+    conversation_history=None,
+    summary="",
+    tool_result=None
+):
+
+    if conversation_history is None:
+
+        conversation_history = []
+
+    max_retries = 3
+
+    print(
+        "🧠 Sending request to Gemini..."
+    )
+
+    for attempt in range(
+        1,
+        max_retries + 1
+    ):
+
+        try:
+
+            response = run_gemini(
+
+                user_input=user_input,
+
+                age_group=age_group,
+
+                language=language,
+
+                conversation_history=conversation_history,
+
+                summary=summary,
+
+                tool_result=tool_result
+            )
+
+            return response
+
+        except Exception as e:
+
+            error_text = str(e)
+
+            print(
+                f"⚠️ Gemini request failed "
+                f"(attempt {attempt}/{max_retries}): "
+                f"{error_text}"
+            )
+
+            error_upper = error_text.upper()
+
+            # ------------------------------------------------
+            # QUOTA
+            # ------------------------------------------------
+
+            if (
+                "429" in error_text
+                or "RESOURCE_EXHAUSTED"
+                in error_upper
+                or "QUOTA" in error_upper
+            ):
+
+                print(
+                    "🚫 Gemini API quota exceeded."
+                )
+
+                print(
+                    "⏸️ Stopping Gemini retries."
+                )
+
+                print(
+                    "🔄 Activating Groq fallback..."
+                )
+
+                return run_groq_fallback(
+
+                    user_input=user_input,
+
+                    age_group=age_group,
+
+                    language=language,
+
+                    conversation_history=conversation_history,
+
+                    summary=summary,
+
+                    tool_result=tool_result
+                )
+
+            # ------------------------------------------------
+            # SERVICE UNAVAILABLE
+            # ------------------------------------------------
+
+            if (
+                "503" in error_text
+                or "UNAVAILABLE"
+                in error_upper
+                or "HIGH DEMAND"
+                in error_upper
+            ):
+
+                if attempt < max_retries:
+
+                    wait_time = 2 ** (
+                        attempt - 1
+                    )
+
+                    print(
+                        f"⏳ Gemini temporarily unavailable. "
+                        f"Retrying in {wait_time}s..."
+                    )
+
+                    time.sleep(
+                        wait_time
+                    )
+
+                    continue
+
+                print(
+                    "🔄 Gemini unavailable after retries."
+                )
+
+                return run_groq_fallback(
+
+                    user_input=user_input,
+
+                    age_group=age_group,
+
+                    language=language,
+
+                    conversation_history=conversation_history,
+
+                    summary=summary,
+
+                    tool_result=tool_result
+                )
+
+            # ------------------------------------------------
+            # OTHER ERRORS
+            # ------------------------------------------------
+
+            if attempt < max_retries:
+
+                wait_time = 2 ** (
+                    attempt - 1
+                )
+
+                time.sleep(
+                    wait_time
+                )
+
+                continue
+
+    # ========================================================
+    # FINAL FALLBACK
+    # ========================================================
+
+    print(
+        "🔄 Activating final Groq fallback..."
+    )
+
+    return run_groq_fallback(
+
+        user_input=user_input,
+
+        age_group=age_group,
+
+        language=language,
+
+        conversation_history=conversation_history,
+
+        summary=summary,
+
+        tool_result=tool_result
+    )
+
+
+# ============================================================
+# DIRECT TEST
+# ============================================================
 
 if __name__ == "__main__":
 
-    print("\n========================================")
-    print("Testing Gemini + Groq Health Agent")
-    print("========================================\n")
-
-    test_question = "What are common symptoms of flu?"
-
-    response = run_gemini_with_retry(
-        user_input=test_question,
+    result = run_gemini_with_retry(
+        user_input="What is a headache?",
         age_group="Adults",
-        language="English",
-        conversation_history=[]
+        language="English"
     )
 
-    print("\n--- Final Response ---\n")
-    print(response)
+    print("\n========================================")
+    print("RESPONSE")
+    print("========================================")
+    print(result)
