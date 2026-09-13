@@ -1,21 +1,28 @@
 import streamlit as st
 import time
 import random
+import re
 from datetime import datetime
 
 from gemini_agent import run_gemini_with_retry
 from database import ChatDatabase
 
-# Optional imports
+
+# ============================================================
+# OPTIONAL IMPORTS
+# ============================================================
+
 try:
     from analytics_dashboard import show_analytics
 except ImportError:
     show_analytics = None
 
+
 try:
     from voice_input import get_voice_input
 except ImportError:
     get_voice_input = None
+
 
 try:
     from pdf_export import create_pdf
@@ -47,6 +54,7 @@ db = ChatDatabase()
 # ============================================================
 
 if "messages" not in st.session_state:
+
     st.session_state.messages = [
         {
             "role": "assistant",
@@ -54,35 +62,44 @@ if "messages" not in st.session_state:
                 "👋 Hello! I'm your Health Assistant. "
                 "I can provide general educational information about "
                 "symptoms, prevention, self-care, and healthy habits. "
-                "Please remember that I am not a doctor and cannot diagnose "
-                "or treat medical conditions."
+                "Please remember that I am not a doctor and cannot "
+                "diagnose or treat medical conditions."
             )
         }
     ]
 
+
 if "age_group" not in st.session_state:
     st.session_state.age_group = "Adults"
+
 
 if "language" not in st.session_state:
     st.session_state.language = "English"
 
+
 if "query_count" not in st.session_state:
     st.session_state.query_count = 0
+
 
 if "quick_topic" not in st.session_state:
     st.session_state.quick_topic = None
 
+
 if "theme" not in st.session_state:
     st.session_state.theme = "Dark"
+
 
 if "process_quick_topic" not in st.session_state:
     st.session_state.process_quick_topic = False
 
+
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(random.randint(1000, 9999))
 
+
 if "current_page" not in st.session_state:
     st.session_state.current_page = "Health Assistant"
+
 
 if "voice_text" not in st.session_state:
     st.session_state.voice_text = ""
@@ -99,14 +116,12 @@ TIME_WINDOW = 60
 
 
 def check_rate_limit(user_id):
-    """Simple rate limiter."""
 
     current_time = time.time()
 
     if user_id not in rate_limit_data:
         rate_limit_data[user_id] = []
 
-    # Remove requests older than TIME_WINDOW
     rate_limit_data[user_id] = [
         request_time
         for request_time in rate_limit_data[user_id]
@@ -122,21 +137,93 @@ def check_rate_limit(user_id):
 
 
 # ============================================================
+# CLEAN AI RESPONSE
+# ============================================================
+
+def clean_ai_response(text):
+    """
+    Clean accidental HTML and Streamlit anchor artifacts
+    from AI-generated responses.
+    """
+
+    if not text:
+        return ""
+
+    text = str(text)
+
+    # --------------------------------------------------------
+    # Remove Streamlit SVG/anchor artifacts
+    # Example:
+    # [svg](https://example.com/#heading)
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r'\[svg\]\([^)]*\)',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # --------------------------------------------------------
+    # Remove accidental assistant HTML wrapper
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r'<strong>\s*🩺\s*Health Assistant\s*</strong>',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'<br\s*/?>',
+        '\n',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'</?div[^>]*>',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # --------------------------------------------------------
+    # Remove code fences around the old HTML wrapper
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r'```(?:html)?\s*',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'\s*```',
+        '',
+        text
+    )
+
+    # --------------------------------------------------------
+    # Remove excessive blank lines
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r'\n{4,}',
+        '\n\n',
+        text
+    )
+
+    return text.strip()
+
+
+# ============================================================
 # SHORT-TERM MEMORY
 # ============================================================
 
 def get_conversation_history():
-    """
-    Return previous conversation messages.
-
-    The newest user message is already stored in
-    st.session_state.messages when this function is called.
-
-    Therefore, messages[:-1] gives us the conversation
-    history BEFORE the current question.
-
-    This is Short-Term Memory.
-    """
 
     if len(st.session_state.messages) <= 1:
         return []
@@ -145,7 +232,7 @@ def get_conversation_history():
 
 
 # ============================================================
-# THEME
+# THEME CSS
 # ============================================================
 
 if st.session_state.theme == "Dark":
@@ -154,18 +241,36 @@ if st.session_state.theme == "Dark":
         """
         <style>
 
+        /* ====================================================
+           MAIN APPLICATION
+        ==================================================== */
+
         .stApp {
-            background-color: #0f172a;
-            color: #f8fafc;
+            background-color: #0f172a !important;
+            color: #f8fafc !important;
         }
 
+        .main {
+            background-color: #0f172a !important;
+        }
+
+
+        /* ====================================================
+           SIDEBAR
+        ==================================================== */
+
         [data-testid="stSidebar"] {
-            background-color: #111827;
+            background-color: #111827 !important;
         }
 
         [data-testid="stSidebar"] * {
             color: #f8fafc !important;
         }
+
+
+        /* ====================================================
+           HEADER
+        ==================================================== */
 
         .main-title {
             font-size: 42px;
@@ -188,28 +293,109 @@ if st.session_state.theme == "Dark":
             margin-bottom: 15px;
         }
 
+
+        /* ====================================================
+           INFORMATION CARDS
+        ==================================================== */
+
         .info-card {
             padding: 20px;
             border-radius: 15px;
             background-color: #1e293b;
             border: 1px solid #334155;
             margin-bottom: 15px;
+            color: #f8fafc;
         }
 
-        .chat-user {
-            background-color: #1e3a5f;
-            padding: 15px;
-            border-radius: 15px;
-            margin: 10px 0;
+        .info-card h3 {
+            color: #38bdf8 !important;
         }
 
-        .chat-assistant {
-            background-color: #1e293b;
-            padding: 15px;
-            border-radius: 15px;
-            margin: 10px 0;
-            border: 1px solid #334155;
+        .info-card p {
+            color: #cbd5e1 !important;
         }
+
+
+        /* ====================================================
+           STREAMLIT CHAT MESSAGE
+        ==================================================== */
+
+        [data-testid="stChatMessage"] {
+            background-color: #1e293b !important;
+            border: 1px solid #334155 !important;
+            border-radius: 16px !important;
+            padding: 16px !important;
+            margin-top: 10px !important;
+            margin-bottom: 10px !important;
+        }
+
+        /* User and assistant message content */
+
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li,
+        [data-testid="stChatMessage"] span,
+        [data-testid="stChatMessage"] div {
+            color: #f8fafc !important;
+        }
+
+
+        /* Chat headings */
+
+        [data-testid="stChatMessage"] h1,
+        [data-testid="stChatMessage"] h2,
+        [data-testid="stChatMessage"] h3,
+        [data-testid="stChatMessage"] h4 {
+            color: #38bdf8 !important;
+        }
+
+
+        /* Chat bold text */
+
+        [data-testid="stChatMessage"] strong {
+            color: #f8fafc !important;
+        }
+
+
+        /* Chat links */
+
+        [data-testid="stChatMessage"] a {
+            color: #7dd3fc !important;
+        }
+
+
+        /* ====================================================
+           CHAT INPUT
+        ==================================================== */
+
+        [data-testid="stChatInput"] {
+            background-color: #1e293b !important;
+            border: 1px solid #475569 !important;
+            border-radius: 14px !important;
+        }
+
+        [data-testid="stChatInput"] textarea {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+            caret-color: #38bdf8 !important;
+        }
+
+        [data-testid="stChatInput"] textarea::placeholder {
+            color: #94a3b8 !important;
+        }
+
+
+        /* ====================================================
+           NORMAL STREAMLIT TEXT
+        ==================================================== */
+
+        .stMarkdown {
+            color: #f8fafc;
+        }
+
+
+        /* ====================================================
+           DISCLAIMER
+        ==================================================== */
 
         .disclaimer {
             background-color: #3f2f14;
@@ -219,6 +405,11 @@ if st.session_state.theme == "Dark":
             color: #fef3c7;
             margin-top: 20px;
         }
+
+
+        /* ====================================================
+           FOOTER
+        ==================================================== */
 
         footer {
             visibility: hidden;
@@ -236,8 +427,20 @@ else:
         <style>
 
         .stApp {
-            background-color: #f8fafc;
-            color: #0f172a;
+            background-color: #f8fafc !important;
+            color: #0f172a !important;
+        }
+
+        .main {
+            background-color: #f8fafc !important;
+        }
+
+        [data-testid="stSidebar"] {
+            background-color: #ffffff !important;
+        }
+
+        [data-testid="stSidebar"] * {
+            color: #0f172a !important;
         }
 
         .main-title {
@@ -269,19 +472,49 @@ else:
             margin-bottom: 15px;
         }
 
-        .chat-user {
-            background-color: #dbeafe;
-            padding: 15px;
-            border-radius: 15px;
-            margin: 10px 0;
+        .chat-user,
+        .chat-assistant {
+            background-color: white;
+            color: #0f172a;
         }
 
-        .chat-assistant {
-            background-color: #f1f5f9;
-            padding: 15px;
-            border-radius: 15px;
-            margin: 10px 0;
-            border: 1px solid #e2e8f0;
+        [data-testid="stChatMessage"] {
+            background-color: #ffffff !important;
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 16px !important;
+            padding: 16px !important;
+            margin-top: 10px !important;
+            margin-bottom: 10px !important;
+        }
+
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li,
+        [data-testid="stChatMessage"] span,
+        [data-testid="stChatMessage"] div {
+            color: #0f172a !important;
+        }
+
+        [data-testid="stChatMessage"] h1,
+        [data-testid="stChatMessage"] h2,
+        [data-testid="stChatMessage"] h3,
+        [data-testid="stChatMessage"] h4 {
+            color: #0284c7 !important;
+        }
+
+        [data-testid="stChatInput"] {
+            background-color: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 14px !important;
+        }
+
+        [data-testid="stChatInput"] textarea {
+            background-color: #ffffff !important;
+            color: #0f172a !important;
+            caret-color: #0284c7 !important;
+        }
+
+        [data-testid="stChatInput"] textarea::placeholder {
+            color: #64748b !important;
         }
 
         .disclaimer {
@@ -330,10 +563,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # --------------------------------------------------------
-    # NAVIGATION
-    # --------------------------------------------------------
-
     page = st.radio(
         "Navigation",
         [
@@ -354,16 +583,14 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # --------------------------------------------------------
-    # SETTINGS
-    # --------------------------------------------------------
-
     st.markdown("### ⚙️ Settings")
 
     st.session_state.theme = st.selectbox(
         "Theme",
         ["Dark", "Light"],
-        index=["Dark", "Light"].index(st.session_state.theme)
+        index=["Dark", "Light"].index(
+            st.session_state.theme
+        )
     )
 
     st.session_state.language = st.selectbox(
@@ -379,7 +606,9 @@ with st.sidebar:
             "Urdu",
             "Hindi",
             "Arabic"
-        ].index(st.session_state.language)
+        ].index(
+            st.session_state.language
+        )
     )
 
     st.session_state.age_group = st.selectbox(
@@ -395,18 +624,17 @@ with st.sidebar:
             "Teenagers",
             "Adults",
             "Older Adults"
-        ].index(st.session_state.age_group)
+        ].index(
+            st.session_state.age_group
+        )
     )
 
     st.markdown("---")
 
-    # --------------------------------------------------------
-    # HEALTH CATEGORIES
-    # --------------------------------------------------------
-
     st.markdown("### 🏥 Health Categories")
 
     disease_categories = {
+
         "🤒 Common Symptoms": [
             "Headache",
             "Fever",
@@ -414,21 +642,25 @@ with st.sidebar:
             "Cold",
             "Fatigue"
         ],
+
         "🫀 Chronic Conditions": [
             "Diabetes",
             "High Blood Pressure",
             "Heart Health"
         ],
+
         "🧠 Mental Wellness": [
             "Stress",
             "Anxiety",
             "Sleep"
         ],
+
         "🥗 Healthy Lifestyle": [
             "Nutrition",
             "Exercise",
             "Hydration"
         ]
+
     }
 
     selected_category = st.selectbox(
@@ -441,18 +673,16 @@ with st.sidebar:
         disease_categories[selected_category]
     )
 
-    if st.button("Learn About Topic", use_container_width=True):
+    if st.button(
+        "Learn About Topic",
+        use_container_width=True
+    ):
 
         st.session_state.quick_topic = selected_topic
         st.session_state.process_quick_topic = True
-
         st.rerun()
 
     st.markdown("---")
-
-    # --------------------------------------------------------
-    # ACTIONS
-    # --------------------------------------------------------
 
     st.markdown("### 🛠️ Actions")
 
@@ -461,15 +691,12 @@ with st.sidebar:
         use_container_width=True
     ):
 
-        if len(st.session_state.messages) > 1:
+        st.session_state.messages = [
+            st.session_state.messages[0]
+        ]
 
-            st.session_state.messages = [
-                st.session_state.messages[0]
-            ]
-
-            st.success("Conversation history cleared.")
-
-            st.rerun()
+        st.success("Conversation history cleared.")
+        st.rerun()
 
     if st.button(
         "🔄 Reset Everything",
@@ -480,10 +707,6 @@ with st.sidebar:
             del st.session_state[key]
 
         st.rerun()
-
-    # --------------------------------------------------------
-    # EXPORT
-    # --------------------------------------------------------
 
     st.markdown("---")
 
@@ -504,7 +727,10 @@ with st.sidebar:
 
                 if pdf_file:
 
-                    with open(pdf_file, "rb") as file:
+                    with open(
+                        pdf_file,
+                        "rb"
+                    ) as file:
 
                         st.download_button(
                             label="⬇️ Download PDF",
@@ -526,10 +752,6 @@ with st.sidebar:
                 "PDF export module is not available."
             )
 
-    # --------------------------------------------------------
-    # USER INFORMATION
-    # --------------------------------------------------------
-
     st.markdown("---")
 
     st.caption(
@@ -548,35 +770,44 @@ with st.sidebar:
 if st.session_state.current_page == "Health Tips":
 
     st.markdown(
-        '<div class="section-title">🌱 Healthy Lifestyle Tips</div>',
+        '<div class="section-title">'
+        '🌱 Healthy Lifestyle Tips'
+        '</div>',
         unsafe_allow_html=True
     )
 
     tips = [
+
         (
             "💧 Stay Hydrated",
             "Drink enough water throughout the day."
         ),
+
         (
             "🥗 Eat Balanced Meals",
             "Include vegetables, fruits, proteins, and whole grains."
         ),
+
         (
             "🏃 Stay Active",
             "Regular physical activity supports overall health."
         ),
+
         (
             "😴 Sleep Well",
             "Maintain a consistent and healthy sleep schedule."
         ),
+
         (
             "🧘 Manage Stress",
             "Use healthy relaxation techniques and take regular breaks."
         ),
+
         (
             "🧼 Maintain Hygiene",
             "Wash your hands regularly and maintain personal hygiene."
         )
+
     ]
 
     for title, description in tips:
@@ -609,7 +840,9 @@ if st.session_state.current_page == "Health Tips":
 elif st.session_state.current_page == "Analytics":
 
     st.markdown(
-        '<div class="section-title">📊 Analytics Dashboard</div>',
+        '<div class="section-title">'
+        '📊 Analytics Dashboard'
+        '</div>',
         unsafe_allow_html=True
     )
 
@@ -617,6 +850,7 @@ elif st.session_state.current_page == "Analytics":
 
         try:
             show_analytics()
+
         except Exception as e:
 
             st.error(
@@ -637,7 +871,9 @@ elif st.session_state.current_page == "Analytics":
 elif st.session_state.current_page == "Contact":
 
     st.markdown(
-        '<div class="section-title">📞 Contact & Information</div>',
+        '<div class="section-title">'
+        '📞 Contact & Information'
+        '</div>',
         unsafe_allow_html=True
     )
 
@@ -645,21 +881,29 @@ elif st.session_state.current_page == "Contact":
         """
         <div class="info-card">
 
-        ### 🩺 About Health Assistant
+        <h3>🩺 About Health Assistant</h3>
 
+        <p>
         This project is an AI-powered educational health assistant
         designed to provide general information about symptoms,
         prevention, self-care, and healthy lifestyle topics.
+        </p>
 
-        ### ⚠️ Important
+        <h3>⚠️ Important</h3>
 
+        <p>
         This application is for educational purposes only.
+        </p>
 
+        <p>
         It is not a doctor, medical professional, diagnostic system,
         or emergency medical service.
+        </p>
 
+        <p>
         Always consult a qualified healthcare professional for
         personal medical advice.
+        </p>
 
         </div>
         """,
@@ -673,9 +917,9 @@ elif st.session_state.current_page == "Contact":
 
 else:
 
-    # --------------------------------------------------------
+    # ========================================================
     # QUICK TOPIC PROCESSING
-    # --------------------------------------------------------
+    # ========================================================
 
     if st.session_state.process_quick_topic:
 
@@ -688,7 +932,6 @@ else:
             f"should consider speaking with a healthcare professional."
         )
 
-        # Add current user message
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -696,11 +939,11 @@ else:
             }
         )
 
-        # Get PREVIOUS conversation history
         conversation_history = get_conversation_history()
 
-        # Rate limit
-        if not check_rate_limit(st.session_state.user_id):
+        if not check_rate_limit(
+            st.session_state.user_id
+        ):
 
             response = (
                 "You have reached the temporary request limit. "
@@ -720,6 +963,8 @@ else:
                         conversation_history=conversation_history
                     )
 
+                    response = clean_ai_response(response)
+
                 except Exception as e:
 
                     response = (
@@ -727,7 +972,6 @@ else:
                         f"Please try again later.\n\nError: {str(e)}"
                     )
 
-        # Add assistant response
         st.session_state.messages.append(
             {
                 "role": "assistant",
@@ -737,7 +981,6 @@ else:
 
         st.session_state.query_count += 1
 
-        # Save conversation
         try:
 
             db.add_conversation(
@@ -756,9 +999,10 @@ else:
 
         st.rerun()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # INFORMATION CARDS
-    # --------------------------------------------------------
+    # ========================================================
 
     col1, col2, col3 = st.columns(3)
 
@@ -768,10 +1012,12 @@ else:
             """
             <div class="info-card">
 
-            ### 📚 Symptom Education
+            <h3>📚 Symptom Education</h3>
 
+            <p>
             Learn about common symptoms and general health
             information in simple language.
+            </p>
 
             </div>
             """,
@@ -784,10 +1030,12 @@ else:
             """
             <div class="info-card">
 
-            ### 🛡️ Prevention
+            <h3>🛡️ Prevention</h3>
 
+            <p>
             Explore general prevention strategies and healthy
             lifestyle habits.
+            </p>
 
             </div>
             """,
@@ -800,64 +1048,60 @@ else:
             """
             <div class="info-card">
 
-            ### 💡 Self-Care
+            <h3>💡 Self-Care</h3>
 
+            <p>
             Learn about general self-care approaches and when
             professional medical guidance may be appropriate.
+            </p>
 
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    # --------------------------------------------------------
-    # RECENT CONVERSATION
-    # --------------------------------------------------------
+
+    # ========================================================
+    # CONVERSATION
+    # ========================================================
 
     st.markdown(
-        '<div class="section-title">💬 Conversation</div>',
+        '<div class="section-title">'
+        '💬 Conversation'
+        '</div>',
         unsafe_allow_html=True
     )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # DISPLAY CHAT HISTORY
-    # --------------------------------------------------------
+    # ========================================================
 
     for message in st.session_state.messages:
 
         if message["role"] == "user":
 
-            st.markdown(
-                f"""
-                <div class="chat-user">
+            with st.chat_message("user"):
 
-                <strong>👤 You</strong>
-
-                <br><br>
-
-                {message["content"]}
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                st.markdown(
+                    message["content"]
+                )
 
         else:
 
-            st.markdown(
-                f"""
-                <div class="chat-assistant">
+            with st.chat_message(
+                "assistant",
+                avatar="🩺"
+            ):
 
-                <strong>🩺 Health Assistant</strong>
+                cleaned_content = clean_ai_response(
+                    message["content"]
+                )
 
-                <br><br>
+                st.markdown(
+                    cleaned_content
+                )
 
-                {message["content"]}
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
 
     # ========================================================
     # VOICE INPUT
@@ -879,7 +1123,6 @@ else:
                 if voice_text:
 
                     st.session_state.voice_text = voice_text
-
                     st.rerun()
 
             except Exception as e:
@@ -894,9 +1137,10 @@ else:
             "Voice input module is not available."
         )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # VOICE MESSAGE PROCESSING
-    # --------------------------------------------------------
+    # ========================================================
 
     if st.session_state.voice_text:
 
@@ -904,7 +1148,6 @@ else:
 
         st.session_state.voice_text = ""
 
-        # Add user message
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -912,12 +1155,11 @@ else:
             }
         )
 
-        # IMPORTANT:
-        # Get previous messages AFTER adding the user message.
-        # The helper removes the newest message.
         conversation_history = get_conversation_history()
 
-        if not check_rate_limit(st.session_state.user_id):
+        if not check_rate_limit(
+            st.session_state.user_id
+        ):
 
             response = (
                 "You have reached the temporary request limit. "
@@ -937,6 +1179,8 @@ else:
                         conversation_history=conversation_history
                     )
 
+                    response = clean_ai_response(response)
+
                 except Exception as e:
 
                     response = (
@@ -944,7 +1188,6 @@ else:
                         f"Please try again later.\n\nError: {str(e)}"
                     )
 
-        # Add assistant response
         st.session_state.messages.append(
             {
                 "role": "assistant",
@@ -954,7 +1197,6 @@ else:
 
         st.session_state.query_count += 1
 
-        # Save conversation
         try:
 
             db.add_conversation(
@@ -969,6 +1211,7 @@ else:
             pass
 
         st.rerun()
+
 
     # ========================================================
     # TEXT CHAT
@@ -980,10 +1223,6 @@ else:
 
     if prompt:
 
-        # ----------------------------------------------------
-        # ADD USER MESSAGE
-        # ----------------------------------------------------
-
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -991,38 +1230,11 @@ else:
             }
         )
 
-        # ----------------------------------------------------
-        # SHORT-TERM MEMORY
-        # ----------------------------------------------------
-        #
-        # IMPORTANT:
-        #
-        # The current user message has already been added.
-        #
-        # get_conversation_history()
-        # returns all messages BEFORE this current message.
-        #
-        # Example:
-        #
-        # User: What is diabetes?
-        # Assistant: Diabetes is...
-        # User: What are its symptoms?
-        #
-        # For the second question, Gemini receives:
-        #
-        # User: What is diabetes?
-        # Assistant: Diabetes is...
-        #
-        # It can therefore understand "its symptoms".
-        # ----------------------------------------------------
-
         conversation_history = get_conversation_history()
 
-        # ----------------------------------------------------
-        # RATE LIMIT
-        # ----------------------------------------------------
-
-        if not check_rate_limit(st.session_state.user_id):
+        if not check_rate_limit(
+            st.session_state.user_id
+        ):
 
             response = (
                 "You have reached the temporary request limit. "
@@ -1030,10 +1242,6 @@ else:
             )
 
         else:
-
-            # ------------------------------------------------
-            # GEMINI REQUEST
-            # ------------------------------------------------
 
             with st.spinner("🧠 Thinking..."):
 
@@ -1046,16 +1254,14 @@ else:
                         conversation_history=conversation_history
                     )
 
+                    response = clean_ai_response(response)
+
                 except Exception as e:
 
                     response = (
                         "Sorry, I couldn't process your request right now. "
                         f"Please try again later.\n\nError: {str(e)}"
                     )
-
-        # ----------------------------------------------------
-        # ADD ASSISTANT RESPONSE
-        # ----------------------------------------------------
 
         st.session_state.messages.append(
             {
@@ -1065,10 +1271,6 @@ else:
         )
 
         st.session_state.query_count += 1
-
-        # ----------------------------------------------------
-        # SAVE CONVERSATION
-        # ----------------------------------------------------
 
         try:
 
@@ -1083,11 +1285,8 @@ else:
         except Exception:
             pass
 
-        # ----------------------------------------------------
-        # REFRESH UI
-        # ----------------------------------------------------
-
         st.rerun()
+
 
     # ========================================================
     # DISCLAIMER
