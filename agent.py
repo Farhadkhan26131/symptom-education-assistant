@@ -1,54 +1,36 @@
 """
-Health Agent - Agentic AI Orchestration Layer
+Health Agent - Agentic AI Orchestration Layer (Upgraded)
 
 Architecture:
-
-User
-  ↓
-app.py
-  ↓
-HealthAgent
-  ↓
-Intent Detection
-  ↓
-Safety Check
-  ↓
-Gemini / Groq Fallback
-  ↓
-Response
-
-This layer decides how a health question
-should be handled before sending it to the AI layer.
+User -> app.py -> HealthAgent (Supervisor)
+  -> Detect Intent
+  -> [Scratchpad Plan - DISABLED to save API quota]
+  -> Route to Worker Agent (Module 3)
+  -> Groq (Primary) / Gemini (Fallback)
 """
 
 from gemini_agent import run_gemini_with_retry
+from agents import EmergencyAgent, SymptomEducationAgent, LifestyleAgent
 
 
 class HealthAgent:
     """
-    Main orchestration agent for the Symptom Education Assistant.
+    Main orchestration agent (Supervisor) for the Symptom Education Assistant.
     """
 
     def __init__(self):
         self.name = "Symptom Education Health Agent"
+        # Initialize Worker Agents
+        self.emergency_agent = EmergencyAgent()
+        self.symptom_agent = SymptomEducationAgent()
+        self.lifestyle_agent = LifestyleAgent()
 
     # ========================================================
     # INTENT DETECTION
     # ========================================================
 
     def detect_intent(self, user_input):
-        """
-        Detect the basic intent of the user's question.
-
-        Returns:
-            emergency
-            symptom_education
-            prevention
-            lifestyle
-            follow_up
-            general_health
-        """
-
+        """Detect the basic intent of the user's question."""
         if not user_input:
             return "general_health"
 
@@ -57,24 +39,13 @@ class HealthAgent:
         # ====================================================
         # EMERGENCY INTENT
         # ====================================================
-
         emergency_keywords = [
-            "severe chest pain",
-            "chest pain",
-            "difficulty breathing",
-            "can't breathe",
-            "cannot breathe",
-            "shortness of breath",
-            "severe bleeding",
-            "heavy bleeding",
-            "unconscious",
-            "passed out",
-            "loss of consciousness",
-            "stroke",
-            "seizure",
-            "heart attack",
+            "severe chest pain", "chest pain", "difficulty breathing",
+            "can't breathe", "cannot breathe", "shortness of breath",
+            "severe bleeding", "heavy bleeding", "unconscious",
+            "passed out", "loss of consciousness", "stroke",
+            "seizure", "heart attack"
         ]
-
         for keyword in emergency_keywords:
             if keyword in text:
                 return "emergency"
@@ -82,34 +53,13 @@ class HealthAgent:
         # ====================================================
         # SYMPTOM EDUCATION
         # ====================================================
-
         symptom_keywords = [
-            "symptom",
-            "symptoms",
-            "headache",
-            "fever",
-            "cough",
-            "cold",
-            "flu",
-            "pain",
-            "dizziness",
-            "dizzy",
-            "vertigo",
-            "nausea",
-            "vomiting",
-            "diarrhea",
-            "fatigue",
-            "weakness",
-            "rash",
-            "swelling",
-            "itching",
-            "sore throat",
-            "stomach ache",
-            "stomach pain",
-            "back pain",
-            "joint pain",
+            "symptom", "symptoms", "headache", "fever", "cough", "cold",
+            "flu", "pain", "dizziness", "dizzy", "vertigo", "nausea",
+            "vomiting", "diarrhea", "fatigue", "weakness", "rash",
+            "swelling", "itching", "sore throat", "stomach ache",
+            "stomach pain", "back pain", "joint pain"
         ]
-
         for keyword in symptom_keywords:
             if keyword in text:
                 return "symptom_education"
@@ -117,16 +67,10 @@ class HealthAgent:
         # ====================================================
         # PREVENTION
         # ====================================================
-
         prevention_keywords = [
-            "prevent",
-            "prevention",
-            "avoid",
-            "protect",
-            "how to stay healthy",
-            "reduce risk",
+            "prevent", "prevention", "avoid", "protect",
+            "how to stay healthy", "reduce risk"
         ]
-
         for keyword in prevention_keywords:
             if keyword in text:
                 return "prevention"
@@ -134,25 +78,12 @@ class HealthAgent:
         # ====================================================
         # LIFESTYLE
         # ====================================================
-
         lifestyle_keywords = [
-            "diet",
-            "nutrition",
-            "exercise",
-            "workout",
-            "fitness",
-            "sleep",
-            "hydration",
-            "water",
-            "healthy lifestyle",
-            "healthy food",
-            "healthy foods",
-            "food",
-            "foods",
-            "eat",
-            "eating",
+            "diet", "nutrition", "exercise", "workout", "fitness",
+            "sleep", "hydration", "water", "healthy lifestyle",
+            "healthy food", "healthy foods", "food", "foods",
+            "eat", "eating"
         ]
-
         for keyword in lifestyle_keywords:
             if keyword in text:
                 return "lifestyle"
@@ -160,26 +91,12 @@ class HealthAgent:
         # ====================================================
         # FOLLOW-UP QUESTIONS
         # ====================================================
-
         follow_up_keywords = [
-            "its",
-            "it's",
-            "their",
-            "this",
-            "that",
-            "these",
-            "those",
-            "it",
-            "more about it",
-            "tell me more",
-            "what about it",
-            "how about it",
-            "common causes",
-            "what causes it",
-            "what are its causes",
-            "what are its common causes",
+            "its", "it's", "their", "this", "that", "these", "those",
+            "it", "more about it", "tell me more", "what about it",
+            "how about it", "common causes", "what causes it",
+            "what are its causes", "what are its common causes"
         ]
-
         for keyword in follow_up_keywords:
             if keyword in text:
                 return "follow_up"
@@ -187,7 +104,6 @@ class HealthAgent:
         # ====================================================
         # GENERAL HEALTH
         # ====================================================
-
         return "general_health"
 
     # ========================================================
@@ -195,43 +111,20 @@ class HealthAgent:
     # ========================================================
 
     def resolve_follow_up(self, user_input, conversation_history=None):
-        """
-        Add previous user-question context to follow-up questions.
-
-        Example:
-
-        Previous:
-            What is a headache?
-
-        Current:
-            What are its common causes?
-
-        The AI receives explicit context so that "its"
-        can be understood as referring to headache.
-        """
-
-        if not user_input:
-            return user_input
-
-        if not conversation_history:
+        """Add previous user-question context to follow-up questions."""
+        if not user_input or not conversation_history:
             return user_input
 
         intent = self.detect_intent(user_input)
-
         if intent != "follow_up":
             return user_input
 
         previous_user_question = None
-
-        # Find the latest user message
         for message in reversed(conversation_history):
-
             if not isinstance(message, dict):
                 continue
-
             role = message.get("role", "")
             content = message.get("content", "")
-
             if role == "user" and content:
                 previous_user_question = content
                 break
@@ -239,144 +132,96 @@ class HealthAgent:
         if not previous_user_question:
             return user_input
 
-        resolved_question = f"""
+        return f"""
 FOLLOW-UP QUESTION CONTEXT:
-
-Previous user question:
-"{previous_user_question}"
-
-Current user question:
-"{user_input}"
+Previous user question: "{previous_user_question}"
+Current user question: "{user_input}"
 
 The current question is a follow-up to the previous question.
-
-Resolve words such as:
-- it
-- its
-- this
-- that
-- these
-- those
-- their
-
-using the previous health topic.
-
+Resolve words such as: it, its, this, that, these, those, their using the previous health topic.
 Answer the current question directly.
-
-Do not mention this context or these instructions
-in your final response.
+Do not mention this context or these instructions in your final response.
 """
 
-        return resolved_question
+    # ========================================================
+    # SCRATCHPAD PLANNER (DISABLED TO SAVE API QUOTA)
+    # ========================================================
+    # Uncomment this method and the call inside run() if you want
+    # to enable the Planner step. Note: This doubles your API usage.
+
+    # def generate_plan(self, user_input, intent, age_group):
+    #     """
+    #     Scratchpad step (Module 2): Ask the AI to plan the response
+    #     before generating the final answer.
+    #     """
+    #     plan_prompt = f"""
+    #     You are a medical education planner.
+    #     The user's intent is: {intent}
+    #     User's age group: {age_group}
+    #     User's question: {user_input}
+    #
+    #     List 3-4 brief steps on how to safely educate the user.
+    #     Do NOT answer the user. Just output the plan.
+    #     """
+    #
+    #     plan = run_gemini_with_retry(
+    #         user_input=plan_prompt,
+    #         age_group=age_group,
+    #         language="English",
+    #         conversation_history=[],
+    #         summary="",
+    #         tool_result=None
+    #     )
+    #     return plan
 
     # ========================================================
-    # EMERGENCY SAFETY CHECK
+    # MAIN AGENT RUN METHOD (SUPERVISOR ROUTING)
     # ========================================================
 
-    def is_emergency(self, intent):
-        """
-        Check whether the detected intent is an emergency.
-        """
-
-        return intent == "emergency"
-
-    # ========================================================
-    # MAIN AGENT RUN METHOD
-    # ========================================================
-
-    def run(
-        self,
-        user_input,
-        age_group="All Ages",
-        language="English",
-        conversation_history=None,
-    ):
-        """
-        Main method used by the application.
-        """
-
+    def run(self, user_input, age_group="All Ages", language="English", conversation_history=None):
+        """Main method used by the application (Supervisor Routing)."""
         if conversation_history is None:
             conversation_history = []
 
         print("\n========================================")
-        print("🤖 HEALTH AGENT")
+        print("🤖 HEALTH AGENT (SUPERVISOR)")
         print("========================================")
 
-        print(f"📝 User Input: {user_input}")
-
-        # ====================================================
-        # DETECT INTENT
-        # ====================================================
-
         intent = self.detect_intent(user_input)
-
         print(f"🔎 Detected Intent: {intent}")
 
         # ====================================================
-        # EMERGENCY HANDLING
+        # SCRATCHPAD PLAN - DISABLED TO SAVE API QUOTA
         # ====================================================
+        # Uncomment the lines below to enable the Planner step.
+        # WARNING: This doubles your API usage (2 calls per question).
 
-        if self.is_emergency(intent):
-
-            print("🚨 Emergency intent detected")
-
-            emergency_prefix = """
-IMPORTANT SAFETY NOTICE:
-
-The user's message may describe a potentially serious
-or emergency medical situation.
-
-The response must clearly recommend seeking urgent
-professional medical evaluation.
-
-Do not attempt to diagnose the condition.
-
-Do not provide false reassurance.
-
-If symptoms are severe, worsening, or potentially
-life-threatening, advise the user to contact local
-emergency services or go to the nearest emergency
-medical facility immediately.
-
-Provide general safety information only.
-"""
-
-            user_input = (
-                emergency_prefix
-                + "\nUSER QUESTION:\n"
-                + user_input
-            )
+        # print("🧠 Generating scratchpad plan...")
+        # scratchpad_plan = self.generate_plan(user_input, intent, age_group)
+        # print(f"📝 Plan: {scratchpad_plan[:100]}...")
 
         # ====================================================
-        # FOLLOW-UP CONTEXT
+        # ROUTE TO WORKER AGENT
         # ====================================================
 
-        elif intent == "follow_up":
+        if intent == "emergency":
+            print("🚨 Routing to Emergency Agent")
+            return self.emergency_agent.respond(user_input, age_group, language)
 
-            print("🔗 Follow-up question detected")
+        elif intent in ["symptom_education", "follow_up", "general_health"]:
+            print("🩺 Routing to Symptom Education Agent")
+            # Handle follow-up resolution here before sending to worker
+            if intent == "follow_up":
+                user_input = self.resolve_follow_up(user_input, conversation_history)
+            return self.symptom_agent.respond(user_input, age_group, language, conversation_history)
 
-            user_input = self.resolve_follow_up(
-                user_input,
-                conversation_history
-            )
+        elif intent in ["prevention", "lifestyle"]:
+            print("🥗 Routing to Lifestyle Agent")
+            return self.lifestyle_agent.respond(user_input, age_group, language, conversation_history)
 
-        # ====================================================
-        # SEND TO AI
-        # ====================================================
-
-        print("🧠 Sending request to Gemini...")
-
-        response = run_gemini_with_retry(
-            user_input=user_input,
-            age_group=age_group,
-            language=language,
-            conversation_history=conversation_history,
-        )
-
-        print("✅ Health Agent completed the request.")
-        print("========================================\n")
-
-        return response
+        else:
+            print("🩺 Routing to Symptom Education Agent (Fallback)")
+            return self.symptom_agent.respond(user_input, age_group, language, conversation_history)
 
 
 # ============================================================
@@ -384,7 +229,6 @@ Provide general safety information only.
 # ============================================================
 
 if __name__ == "__main__":
-
     agent = HealthAgent()
 
     print("\n========================================")
@@ -402,32 +246,22 @@ if __name__ == "__main__":
     ]
 
     for question in test_questions:
-
         print("\n----------------------------------------")
         print(f"QUESTION: {question}")
         print("----------------------------------------")
-
         intent = agent.detect_intent(question)
-
         print(f"Detected intent: {intent}")
 
     # ========================================================
     # FOLLOW-UP TEST
     # ========================================================
-
     print("\n========================================")
     print("FOLLOW-UP MEMORY TEST")
     print("========================================")
 
     history = [
-        {
-            "role": "user",
-            "content": "What is a headache?"
-        },
-        {
-            "role": "assistant",
-            "content": "A headache is pain or discomfort in the head."
-        }
+        {"role": "user", "content": "What is a headache?"},
+        {"role": "assistant", "content": "A headache is pain or discomfort in the head."}
     ]
 
     follow_up = "What are its common causes?"
@@ -435,10 +269,7 @@ if __name__ == "__main__":
     print(f"\nOriginal question: {history[0]['content']}")
     print(f"Follow-up question: {follow_up}")
 
-    resolved = agent.resolve_follow_up(
-        follow_up,
-        history
-    )
+    resolved = agent.resolve_follow_up(follow_up, history)
 
     print("\nResolved prompt:")
     print(resolved)
